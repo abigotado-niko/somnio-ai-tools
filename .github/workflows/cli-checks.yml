@@ -1,0 +1,56 @@
+name: CLI checks
+
+# No path filter on purpose: the CLI tests read skills/, commands/, hooks/ and
+# other repo-root content, so a change outside cli/ can break them. It also
+# keeps the check usable as a required status check.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Superseded PR runs are cancelled. Each push to main gets its own group (the
+# commit SHA) so that GitHub's one-pending-run-per-group rule cannot drop a
+# queued run on main.
+concurrency:
+  group: cli-checks-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cli:
+    name: Format, analyze, test, coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # cli/pubspec.yaml allows any Dart 3 (sdk: ^3.0.0); CI pins the SDK
+      # version the suite is verified against. Bump it deliberately.
+      # Note: cli/pubspec.lock is gitignored, so package versions still float.
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.11.1'
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Analyze
+        run: dart analyze --fatal-infos
+
+      - name: Test with coverage
+        run: dart test --coverage=coverage
+
+      # Same script as the local .githooks/pre-push gate: every file in
+      # cli/lib must be at or above 85% line coverage (override: COVERAGE_MIN).
+      - name: Per-file coverage gate (>= 85%)
+        run: tool/coverage_gate.sh
