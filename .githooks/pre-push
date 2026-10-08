@@ -36,53 +36,11 @@ dart pub get >/dev/null
 rm -rf coverage
 dart test --coverage=coverage
 
-# 3. Convert the raw VM coverage into an lcov report.
-#    `format_coverage` ships with the `coverage` package; activate it on demand
-#    if it isn't available so the hook is self-contained on a fresh machine.
-if ! dart pub global list 2>/dev/null | grep -q '^coverage '; then
-  echo "pre-push: activating the 'coverage' package (one-time)…"
-  dart pub global activate coverage >/dev/null
-fi
-
-#    `--check-ignore` makes format_coverage honor `// coverage:ignore-file`
-#    comments, so explicitly excluded files never enter the report.
-dart pub global run coverage:format_coverage \
-  --lcov \
-  --in=coverage \
-  --out=coverage/lcov.info \
-  --report-on=lib \
-  --check-ignore \
-  --packages=.dart_tool/package_config.json >/dev/null
-
-if [ ! -s coverage/lcov.info ]; then
-  echo "pre-push: no coverage data produced — aborting push." >&2
-  exit 1
-fi
-
-# 4. Enforce the threshold PER FILE. Walk each SF:…end_of_record block and
-#    collect every file whose line coverage is below COVERAGE_MIN. A file with
-#    `// coverage:ignore-file` produces no SF: block (thanks to --check-ignore),
-#    so it is excluded automatically. Files never imported by any test also
-#    produce no block — every testable file must be imported by ≥1 test to count.
-BELOW=$(awk -F: '
-  /^SF:/           { file=$2; lf=0; lh=0 }
-  /^LF:/           { lf=$2 }
-  /^LH:/           { lh=$2 }
-  /^end_of_record/ {
-    pct = lf > 0 ? lh / lf * 100 : 100
-    if (pct < MIN) { printf "  %6.2f%%  %s\n", pct, file }
-  }
-' MIN="$COVERAGE_MIN" coverage/lcov.info)
-
-if [ -n "$BELOW" ]; then
+# 3. Convert to lcov and enforce the per-file threshold (shared with CI).
+COVERAGE_MIN="$COVERAGE_MIN" "$CLI_DIR/tool/coverage_gate.sh" || {
   echo "" >&2
-  echo "❌ pre-push: the following files are below the required ${COVERAGE_MIN}%:" >&2
-  echo "$BELOW" >&2
-  echo "" >&2
-  echo "   Add tests, mark the file '// coverage:ignore-file', or run" >&2
-  echo "   'git push --no-verify' to bypass intentionally." >&2
+  echo "   To bypass intentionally: 'git push --no-verify'." >&2
   exit 1
-fi
+}
 
-echo "✅ pre-push: per-file coverage gate passed (every file ≥ ${COVERAGE_MIN}%)."
 exit 0
