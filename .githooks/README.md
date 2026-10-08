@@ -22,8 +22,9 @@ not as an aggregate average). When the gate fails it lists every offending file.
 - Override the threshold for one push: `COVERAGE_MIN=90 git push`
 - Bypass intentionally (e.g. docs-only change): `git push --no-verify`
 
-It uses `dart test --coverage`, then `coverage:format_coverage --check-ignore`
-to produce an lcov report (the `coverage` package is auto-activated on first
-run), then walks each `SF:…end_of_record` block to compute per-file coverage.
+It uses `dart test --coverage`, then `cli/tool/coverage_gate.sh` (the same
+script the CI workflow runs): `coverage:format_coverage --check-ignore` produces
+an lcov report (a pinned version of the `coverage` package is activated on each run), then
+each `SF:…end_of_record` block is walked to compute per-file coverage.
 Files marked `// coverage:ignore-file` (entrypoints, command shells, interactive
 prompts, process-spawning orchestrators) are excluded from the report.

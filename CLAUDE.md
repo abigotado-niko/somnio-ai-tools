@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 dart pub get                                # install deps
-dart analyze                                # static analysis (must pass)
+dart analyze --fatal-infos                  # static analysis (must pass; CI uses --fatal-infos)
 dart test                                   # all tests
 dart test test/src/runner/plan_parser_test.dart   # single test file
 dart test --coverage                        # with coverage
@@ -29,7 +29,7 @@ dart run bin/somnio.dart <args>             # run CLI locally
 dart pub global activate --source path .    # install local build globally
 ```
 
-There is no build step — Dart runs from source. CI gate is `dart analyze` + `dart test`.
+There is no build step — Dart runs from source. CI (`.github/workflows/cli-checks.yml`, runs on every PR and push to `main`) gates on `dart format --set-exit-if-changed`, `dart analyze --fatal-infos`, `dart test`, and the per-file ≥85% coverage gate (`cli/tool/coverage_gate.sh`, shared with the opt-in `.githooks/pre-push`).
 
 ### Version bumps
 

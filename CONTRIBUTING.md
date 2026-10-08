@@ -193,6 +193,20 @@ dart test test/src/utils/banner_test.dart   # Single test file
 dart test --coverage                        # With coverage
 ```
 
+### CI
+
+Every pull request and every push to `main` runs [`.github/workflows/cli-checks.yml`](.github/workflows/cli-checks.yml). It is deliberately not path-filtered, because the CLI tests read `skills/`, `commands/`, `hooks/` and other repo-root content. To reproduce it locally from `cli/`:
+
+```bash
+rm -rf coverage
+dart format --output=none --set-exit-if-changed .
+dart analyze --fatal-infos
+dart test --coverage=coverage
+tool/coverage_gate.sh                       # every file in lib/ must be >= 85% line coverage
+```
+
+The optional `.githooks/pre-push` hook (`git config core.hooksPath .githooks`) runs the tests and the same coverage gate before each push.
+
 ---
 
 ## Commit & Branch Conventions
@@ -207,7 +221,7 @@ dart test --coverage                        # With coverage
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feat/your-feature`
 3. Make your changes
-4. Run `dart analyze` and `dart test` from `cli/`
+4. Run the [CI checks](#ci) from `cli/` (format, `dart analyze --fatal-infos`, `dart test`, coverage gate)
 5. Commit using Conventional Commits format
 6. Push and open a pull request
 
