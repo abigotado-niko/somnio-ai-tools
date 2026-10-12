@@ -133,6 +133,20 @@ void main() {
       expect(result.targetDirectory, endsWith('install'));
     });
 
+    test('reports the names of the bundles it installed', () async {
+      final bundle = _seedBundle(repoRoot);
+      final installer = AgentInstaller(
+        logger: logger,
+        loader: loader,
+        agentConfig: agentFor(format: InstallFormat.markdown),
+      );
+
+      final result = await installer.install(bundles: [bundle]);
+
+      expect(result.installedSkills, [bundle.name]);
+      expect(result.failedSkills, isEmpty);
+    });
+
     test('skillDir format writes agents/ files with resolved tiers', () async {
       final bundle = _seedBundleWithAgents(repoRoot);
       final installer = AgentInstaller(
@@ -358,6 +372,8 @@ void main() {
       final result = await installer.install(bundles: [bad]);
 
       expect(result.skillCount, 0);
+      expect(result.installedSkills, isEmpty);
+      expect(result.failedSkills, ['missing']);
       verify(() => logger.err(any())).called(greaterThanOrEqualTo(1));
     });
   });
@@ -529,6 +545,22 @@ void main() {
 
       expect(counts.installed, 0);
       expect(counts.failed, 1);
+      expect(counts.installedNames, isEmpty);
+      expect(counts.failedNames, [skill.name]);
+    });
+
+    test('installWorkflowSkillsDetailed reports the installed names', () {
+      final skill = seedWorkflow();
+      final installer = AgentInstaller(
+        logger: logger,
+        loader: loader,
+        agentConfig: agentFor(format: InstallFormat.markdown),
+      );
+
+      final counts = installer.installWorkflowSkillsDetailed([skill]);
+
+      expect(counts.installedNames, [skill.name]);
+      expect(counts.failedNames, isEmpty);
     });
 
     test('a missing plan file is skipped, not counted as a failure', () {
@@ -800,6 +832,78 @@ void main() {
       expect(out, contains('# Workflow Builder'));
       expect(out, contains('> Builds workflows.'));
       expect(out, contains('Body.'));
+    });
+
+    test('skillDir: skips __pycache__ and bytecode files in assetDirectories',
+        () {
+      final skill = seedWorkflow(name: 'dora-pyc');
+      _writeFile(repoRoot, 'skills/dora-pyc/scripts/dora_metrics.py', 'ok\n');
+      final pycDir = Directory(
+        p.join(repoRoot, 'skills/dora-pyc/scripts/__pycache__'),
+      )..createSync(recursive: true);
+      // 0xFF / 0xFE are invalid UTF-8, like a real compiled .pyc.
+      File(p.join(pycDir.path, 'x.cpython-314.pyc'))
+          .writeAsBytesSync([0xFF, 0xFE, 0x00, 0x80]);
+      File(p.join(repoRoot, 'skills/dora-pyc/scripts/stray.pyo'))
+          .writeAsBytesSync([0xFF, 0xFE]);
+      final withAssets = WorkflowSkill(
+        id: skill.id,
+        name: skill.name,
+        displayName: skill.displayName,
+        description: skill.description,
+        planRelativePath: skill.planRelativePath,
+        assetDirectories: ['skills/dora-pyc/scripts'],
+      );
+      final installer = AgentInstaller(
+        logger: logger,
+        loader: loader,
+        agentConfig: agentFor(format: InstallFormat.skillDir),
+      );
+
+      final count = installer.installWorkflowSkills([withAssets]);
+
+      expect(count, 1);
+      final scriptsDir = p.join(tmp.path, 'install', 'dora-pyc', 'scripts');
+      expect(File(p.join(scriptsDir, 'dora_metrics.py')).readAsStringSync(),
+          'ok\n');
+      expect(
+          Directory(p.join(scriptsDir, '__pycache__')).existsSync(), isFalse);
+      final leaked = Directory(p.join(tmp.path, 'install'))
+          .listSync(recursive: true)
+          .map((e) => e.path)
+          .where((e) =>
+              e.contains('__pycache__') ||
+              e.endsWith('.pyc') ||
+              e.endsWith('.pyo'));
+      expect(leaked, isEmpty);
+    });
+
+    test('skillDir: skips .DS_Store in assetDirectories', () {
+      final skill = seedWorkflow(name: 'dora-ds');
+      _writeFile(repoRoot, 'skills/dora-ds/scripts/dora_metrics.py', 'ok\n');
+      File(p.join(repoRoot, 'skills/dora-ds/scripts/.DS_Store'))
+          .writeAsBytesSync([0xFF, 0xFE, 0x00, 0x80]);
+      final withAssets = WorkflowSkill(
+        id: skill.id,
+        name: skill.name,
+        displayName: skill.displayName,
+        description: skill.description,
+        planRelativePath: skill.planRelativePath,
+        assetDirectories: ['skills/dora-ds/scripts'],
+      );
+      final installer = AgentInstaller(
+        logger: logger,
+        loader: loader,
+        agentConfig: agentFor(format: InstallFormat.skillDir),
+      );
+
+      final count = installer.installWorkflowSkills([withAssets]);
+
+      expect(count, 1);
+      final scriptsDir = p.join(tmp.path, 'install', 'dora-ds', 'scripts');
+      expect(File(p.join(scriptsDir, 'dora_metrics.py')).readAsStringSync(),
+          'ok\n');
+      expect(File(p.join(scriptsDir, '.DS_Store')).existsSync(), isFalse);
     });
 
     test('skillDir: copies assetDirectories verbatim alongside SKILL.md', () {

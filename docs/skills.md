@@ -2,7 +2,7 @@
 
 # Skills Catalog
 
-Somnio provides audit, workflow, and utility skills. Audit skills run multi-step analysis and produce reports. Utility skills assist with day-to-day Git workflows.
+Somnio provides audit, workflow, and utility skills. Audit skills run multi-step analysis and produce reports. Utility skills assist with day-to-day Git workflows. The `ship` workflow is no longer a skill — it is installed as a project command with `somnio commands install` (see the [README](../README.md#commands)). Before uploading a report anywhere, read [Sharing reports](cli.md#sharing-reports).
 
 ---
 
@@ -10,7 +10,7 @@ Somnio provides audit, workflow, and utility skills. Audit skills run multi-step
 
 **Aliases:** `fh`, `somnio-fh`
 
-Comprehensive Flutter project health audit with 13 analysis steps covering tech stack, architecture, state management, testing, code quality, CI/CD, and documentation. Produces a weighted score and a Google Docs-ready report.
+Comprehensive Flutter project health audit with 13 analysis steps covering tech stack, architecture, state management, testing, code quality, CI/CD, and documentation. Produces a weighted score and a shareable Markdown report.
 
 **Use when:**
 - Onboarding to an existing Flutter codebase
@@ -70,7 +70,7 @@ Run a full Angular health audit on this project and generate a report.
 
 **Aliases:** `nh`, `somnio-nh`
 
-Comprehensive NestJS project health audit with 13 analysis steps. Evaluates architecture, API design, data layer, testing, documentation, and CI/CD with weighted scoring.
+Comprehensive NestJS project health audit with 14 analysis steps. Evaluates architecture, API design, data layer, testing, documentation, and CI/CD with weighted scoring.
 
 **Use when:**
 - Assessing a NestJS backend before a major refactor
@@ -102,7 +102,7 @@ Framework-agnostic, **whole-project SOC 2 readiness audit**. Inspects a reposito
 Run a SOC 2 readiness audit on this project and generate a gap report.
 ```
 
-**Output:** Readiness score + gap register, saved to `./reports/<YYYY-MM-DD>-<project>-soc2-audit.md` (+ a `.json` export)
+**Output:** Readiness score + gap register, saved to `./reports/<YYYY-MM-DD>-<project>-soc2-audit.md` (+ a `.json` export). Trend state for the next run is kept in `./reports/.history/last_soc2_scores.json`
 
 ---
 
@@ -150,7 +150,7 @@ Run an AngularJS best-practices check on this project and list violations.
 
 **Aliases:** `rh`, `somnio-rh`
 
-Comprehensive React project health audit with 13 analysis steps covering tech stack, architecture, state management, testing, code quality, performance, CI/CD, and documentation. Supports CRA, Vite, Next.js, and Remix. Produces a weighted score and a Google Docs-ready report.
+Comprehensive React project health audit with 13 analysis steps covering tech stack, architecture, state management, testing, code quality, performance, CI/CD, and documentation. Supports CRA, Vite, Next.js, and Remix. Produces a weighted score and a shareable Markdown report.
 
 **Use when:**
 - Onboarding to an existing React or Next.js codebase
@@ -230,7 +230,7 @@ Run an Angular best-practices check on this project and list violations.
 
 **Aliases:** `ph`, `somnio-ph`
 
-Comprehensive 13-step health audit for Python projects. Analyses code quality, dependency hygiene, type-annotation coverage, test coverage, security posture, and architectural consistency. Works with any Python project that has a `pyproject.toml` (Poetry, Hatch, PDM, plain PEP 517 builds).
+Comprehensive 14-step health audit for Python projects. Analyses code quality, dependency hygiene, type-annotation coverage, test coverage, security posture, and architectural consistency. Works with any Python project that has a `pyproject.toml` (Poetry, Hatch, PDM, plain PEP 517 builds).
 
 **Use when:**
 - Onboarding to an existing Python codebase
@@ -262,7 +262,7 @@ Framework-agnostic, **whole-project ISO/IEC 27001:2022 readiness audit**. Inspec
 Run an ISO 27001 readiness audit on this project and generate a gap report.
 ```
 
-**Output:** Readiness score + gap register + SoA starter, saved to `./reports/<YYYY-MM-DD>-<project>-iso27001-audit.md` (+ a `.json` export)
+**Output:** Readiness score + gap register + SoA starter, saved to `./reports/<YYYY-MM-DD>-<project>-iso27001-audit.md` (+ a `.json` export). Trend state for the next run is kept in `./reports/.history/last_iso27001_scores.json`
 
 ---
 
@@ -342,7 +342,7 @@ Framework-agnostic **AI Harness Audit**. Scores how complete a project's AI codi
 Run a harness audit on this project and score its AI setup.
 ```
 
-**Output:** Harness score report, saved to `./reports/<YYYY-MM-DD>-<project>-harness-audit.md` (+ a `.json` export)
+**Output:** Harness score report, saved to `./reports/<YYYY-MM-DD>-<project>-harness-audit.md` (+ a `.json` export). Trend state for the next run is kept in `./reports/.history/last_harness_scores.json`
 
 ---
 
@@ -350,7 +350,7 @@ Run a harness audit on this project and score its AI setup.
 
 **Aliases:** `sa`, `somnio-sa`
 
-Framework-agnostic security audit with 11 analysis steps. Scans for hardcoded secrets, runs SAST checks, audits dependencies, and integrates with Trivy and Gitleaks. Auto-detects Flutter, NestJS, Node.js, Go, Rust, Python, and generic projects.
+Framework-agnostic security audit with 10 analysis steps. Scans for hardcoded secrets, runs SAST checks, audits dependencies, and integrates with Trivy and Gitleaks. Auto-detects Flutter, NestJS, Node.js, Go, Rust, Python, and generic projects.
 
 **Use when:**
 - Preparing for a security review or compliance check
@@ -362,7 +362,7 @@ Framework-agnostic security audit with 11 analysis steps. Scans for hardcoded se
 Run a security audit on this project. Check for secrets, vulnerable dependencies, and misconfigurations.
 ```
 
-**Output:** Severity-classified report, saved to `./reports/<YYYY-MM-DD>-<project>-security-audit.md` (+ a `.json` export)
+**Output:** Severity-classified report, saved to `./reports/<YYYY-MM-DD>-<project>-security-audit.md`. Trend state for the next run is kept in `./reports/.history/last_security_scores.json`
 
 ---
 
@@ -498,27 +498,6 @@ Keys explained:
 
 ---
 
-## Ship
-
-Fully automated ship workflow. Detects the base branch, merges it in, runs tests, reviews the diff, bumps `VERSION`, updates `CHANGELOG.md`, commits, pushes, and opens a pull request. Non-interactive — only stops for merge conflicts, failing tests, review ASKs, or ambiguous minor/major version bumps.
-
-**Use when:**
-- Ready to land a feature branch and open a PR
-- Asked to "ship", "deploy", "push to main", or "create a PR"
-- Closing out work and need version/changelog/commit/push done in one pass
-
-**Example prompts:**
-```
-Ship it.
-```
-```
-Create a PR for this branch.
-```
-
-**Output:** Pull request URL, with `VERSION` bumped and `CHANGELOG.md` updated.
-
----
-
 ## Git Branch Format
 
 Generates properly formatted Git branch names following project conventions.
@@ -627,6 +606,8 @@ Fetches two DORA metrics per project and per repo — **Deployment Frequency** a
 
 Projects map to their repos in `config/projects.json` (mono-repo or multi-repo), with each repo declaring its provider: `github` (default), `gitlab`, or `bitbucket`. A single project can mix providers. If a project isn't in the config yet, the skill asks for its repos and provider(s) instead of guessing, and offers to add it.
 
+**Invocation:** when a report is wanted, run the script with `--out-dir reports`; the saved per-repo file (`YYYY-MM-DD-<repo>-dora-metrics.md`) is the artifact to share, unchanged. See [Sharing reports](cli.md#sharing-reports).
+
 **Example prompts:**
 ```
 Run the DORA metrics for Example Project.
@@ -648,7 +629,7 @@ Add project Gamma to DORA metrics, backend on GitLab at platform-team/gamma-api,
 
 Each credential needs read access to all orgs/groups/workspaces of that provider's repos in the project. A missing credential for one provider doesn't block repos on another provider.
 
-**Output:** Deployment Frequency and median Lead Time per repo for the requested window (14 days by default), plus process-gap warnings (e.g. merged PRs with no release yet, a release with no prior release to measure against). Optionally saved to `./reports/`, one Markdown file per repo: `<YYYY-MM-DD>-<repo>-dora-metrics.md`. The portable JSON is printed to stdout rather than saved.
+**Output:** Deployment Frequency and median Lead Time per repo for the requested window (14 days by default), plus process-gap warnings (e.g. merged PRs with no release yet, a release with no prior release to measure against). Optionally saved to `./reports/`, one Markdown file per repo: `<YYYY-MM-DD>-<repo>-dora-metrics.md`. The portable JSON is printed to stdout rather than saved. Every report (saved file and chat reply) ends with a `## Report Metadata` table (`Generated by`, `Skill`, `Date`, measurement window).
 
 ---
 

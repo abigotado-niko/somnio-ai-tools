@@ -8,6 +8,7 @@ import '../content/skill_bundle.dart';
 import '../content/workflow_skill.dart';
 import '../transformers/claude_transformer.dart';
 import '../transformers/transformer.dart';
+import '../utils/bundle_file_filter.dart';
 import '../utils/platform_utils.dart';
 import '../utils/yaml_frontmatter.dart';
 import 'installer.dart';
@@ -78,6 +79,8 @@ class AgentInstaller extends Installer {
     var ruleCount = 0;
     var skippedCount = 0;
     var failedCount = 0;
+    final installedSkills = <String>[];
+    final failedSkills = <String>[];
 
     for (final bundle in bundles) {
       try {
@@ -122,8 +125,10 @@ class AgentInstaller extends Installer {
         manifest.record(skill: bundle.name, kind: 'audit', paths: paths);
 
         skillCount++;
+        installedSkills.add(bundle.name);
       } catch (e) {
         failedCount++;
+        failedSkills.add(bundle.name);
         logger.err('  Failed to install ${bundle.name}: $e');
       }
     }
@@ -136,6 +141,8 @@ class AgentInstaller extends Installer {
       targetDirectory: baseDir,
       skippedCount: skippedCount,
       failedCount: failedCount,
+      installedSkills: installedSkills,
+      failedSkills: failedSkills,
     );
   }
 
@@ -192,6 +199,8 @@ class AgentInstaller extends Installer {
     final baseDir = _installDir;
     var count = 0;
     var failed = 0;
+    final installedNames = <String>[];
+    final failedNames = <String>[];
 
     // Loaded fresh from disk (not carried over from `install()`) so this
     // method also works standalone; when the two run back-to-back on the
@@ -362,15 +371,22 @@ class AgentInstaller extends Installer {
         }
 
         count++;
+        installedNames.add(skill.name);
       } catch (e) {
         failed++;
+        failedNames.add(skill.name);
         logger.err('  Failed to install ${skill.name}: $e');
       }
     }
 
     if (recordManifest) manifest.save();
 
-    return (installed: count, failed: failed);
+    return (
+      installed: count,
+      failed: failed,
+      installedNames: installedNames,
+      failedNames: failedNames,
+    );
   }
 
   /// Appends [refFiles] inline under headings matching each `references/`
@@ -394,6 +410,8 @@ class AgentInstaller extends Installer {
   /// skill directory (e.g. `scripts/`, `config/`), preserving their relative
   /// layout under `<baseDir>/<skill.name>/<dirBaseName>/...`.
   ///
+  /// Python bytecode caches (`__pycache__/`, `*.pyc`, `*.pyo`) are skipped.
+  ///
   /// Silently skips directories that don't exist in the source repo — a
   /// skill can list a directory it hasn't populated yet without breaking
   /// install.
@@ -406,6 +424,7 @@ class AgentInstaller extends Installer {
       for (final entity in sourceDir.listSync(recursive: true)) {
         if (entity is! File) continue;
         final relativePath = p.relative(entity.path, from: sourceDir.path);
+        if (isIgnoredBundleFile(relativePath)) continue;
         _writeFile(
           baseDir,
           p.join(baseDir, skill.name, dirName, relativePath),
