@@ -380,7 +380,7 @@ class UninstallCommand extends Command<int> {
 /// lives directly under its registered `installPath` (by name, and only for
 /// locations without a manifest); [_removeWorkflowInstall] additionally
 /// covers the workflow layout (`global_workflows/` + `somnio_rules/`)
-/// Antigravity used before CLI 3.2.14.
+/// Antigravity used before CLI 3.2.15.
 ///
 /// Somnio skills installed by skills.sh are removed first through
 /// [SkillsShCleaner], so only lock-owned Somnio entries go and their agent
@@ -535,7 +535,7 @@ bool _deleteEntity(String path) {
   return false;
 }
 
-/// Removes the workflow layout (Antigravity before CLI 3.2.14) from [agent]'s
+/// Removes the workflow layout (Antigravity before CLI 3.2.15) from [agent]'s
 /// global install directory, or from its legacy one when the agent has
 /// since moved: `somnio_`-prefixed files in `global_workflows/` when no
 /// manifest records them, and the whole somnio-owned `somnio_rules/`.

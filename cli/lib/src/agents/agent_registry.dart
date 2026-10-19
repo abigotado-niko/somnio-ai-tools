@@ -13,7 +13,7 @@ class AgentRegistry {
   /// Agents that load skills as `<name>/SKILL.md` directories use
   /// [InstallFormat.skillDir]. Those installed as flat markdown before CLI
   /// 3.2.12 (files these agents never load), or as Antigravity workflows
-  /// before 3.2.14, record that in `legacyInstallFormat` /
+  /// before 3.2.15, record that in `legacyInstallFormat` /
   /// `legacyInstallPath` / `legacyExecutionRulesPath`, so update, remove and
   /// uninstall migrate or delete the old layout.
   static const List<AgentConfig> agents = [
@@ -182,7 +182,7 @@ class AgentRegistry {
     displayName: 'Antigravity',
     installFormat: InstallFormat.skillDir,
     // Antigravity's global skills folder. IDE workflows, which releases before
-    // 3.2.14 wrote to `global_workflows/` under the legacy path, stop working
+    // 3.2.15 wrote to `global_workflows/` under the legacy path, stop working
     // on 2026-10-19.
     installPath: '{home}/.gemini/config/skills',
     legacyInstallFormat: InstallFormat.workflow,

@@ -1421,7 +1421,7 @@ void main() {
       installDir = p.join(tmp.path, 'config', 'skills');
     });
 
-    /// The workflow layout CLI releases before 3.2.14 used for Antigravity.
+    /// The workflow layout CLI releases before 3.2.15 used for Antigravity.
     AgentConfig legacyAgent() => AgentConfig(
           id: 'test-agent',
           displayName: 'Test Agent',

@@ -480,10 +480,10 @@ void main() {
       });
     });
 
-    group('an Antigravity manifest written before 3.2.14', () {
+    group('an Antigravity manifest written before 3.2.15', () {
       late String legacyDir;
 
-      /// Seeds the workflow layout releases before 3.2.14 wrote under [root], recorded in
+      /// Seeds the workflow layout releases before 3.2.15 wrote under [root], recorded in
       /// that location's manifest the way the installer recorded it.
       void seedWorkflowInstall(String root) {
         legacyDir = p.join(root, '.gemini', 'antigravity');
