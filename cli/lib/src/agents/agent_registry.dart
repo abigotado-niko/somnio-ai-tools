@@ -13,7 +13,7 @@ class AgentRegistry {
   /// Agents that load skills as `<name>/SKILL.md` directories use
   /// [InstallFormat.skillDir]. Those installed as flat markdown before CLI
   /// 3.2.12 (files these agents never load), as Antigravity workflows before
-  /// 3.2.15, or to a folder the agent never reads before 3.2.16, record that
+  /// 3.2.15, or to a folder the agent never reads before 3.2.17, record that
   /// in `legacyInstallFormat` / `legacyInstallPath` /
   /// `legacyExecutionRulesPath`, so update, remove and uninstall migrate or
   /// delete the old layout.

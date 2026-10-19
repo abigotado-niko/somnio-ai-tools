@@ -1081,7 +1081,7 @@ void main() {
       );
     });
 
-    test('removes an Amp manifest left in ~/.amp before 3.2.16', () {
+    test('removes an Amp manifest left in ~/.amp before 3.2.17', () {
       final oldSkills = p.join(home.path, '.amp', 'skills');
       final oldRules = p.join(home.path, '.amp', 'somnio_rules');
       _writeFile(p.join(oldSkills, 'security_audit.md'));

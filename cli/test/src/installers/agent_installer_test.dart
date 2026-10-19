@@ -1423,7 +1423,7 @@ void main() {
       installDir = p.join(tmp.path, 'new', 'skills');
     });
 
-    /// The layout CLI releases before 3.2.16 used for Amp.
+    /// The layout CLI releases before 3.2.17 used for Amp.
     AgentConfig oldAgent() => AgentConfig(
           id: 'test-agent',
           displayName: 'Test Agent',
