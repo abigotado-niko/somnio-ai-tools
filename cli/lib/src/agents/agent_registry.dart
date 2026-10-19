@@ -12,10 +12,11 @@ class AgentRegistry {
   ///
   /// Agents that load skills as `<name>/SKILL.md` directories use
   /// [InstallFormat.skillDir]. Those installed as flat markdown before CLI
-  /// 3.2.12 (files these agents never load), or as Antigravity workflows
-  /// before 3.2.15, record that in `legacyInstallFormat` /
-  /// `legacyInstallPath` / `legacyExecutionRulesPath`, so update, remove and
-  /// uninstall migrate or delete the old layout.
+  /// 3.2.12 (files these agents never load), as Antigravity workflows before
+  /// 3.2.15, or to a folder the agent never reads before 3.2.16, record that
+  /// in `legacyInstallFormat` / `legacyInstallPath` /
+  /// `legacyExecutionRulesPath`, so update, remove and uninstall migrate or
+  /// delete the old layout.
   static const List<AgentConfig> agents = [
     // ── CLI agents (canExecute: true) ─────────────────────────────
     _claude,
@@ -277,9 +278,16 @@ class AgentRegistry {
     promptStyle: PromptStyle.flag,
     promptFlag: '-x',
     outputFlags: ['--stream-json'],
-    installFormat: InstallFormat.markdown,
-    installPath: '{home}/.amp/skills',
-    executionRulesPath: '{home}/.amp/somnio_rules',
+    installFormat: InstallFormat.skillDir,
+    // Amp's own user folder. `~/.config/agents/skills` and `~/.agents/skills`
+    // are read too, but other agents and skills.sh share them. So do both
+    // project folders Amp reads (`.agents/skills`, `.claude/skills`), so a
+    // project install goes here as well.
+    installPath: '{home}/.config/amp/skills',
+    globalOnly: true,
+    legacyInstallFormat: InstallFormat.markdown,
+    legacyInstallPath: '{home}/.amp/skills',
+    legacyExecutionRulesPath: '{home}/.amp/somnio_rules',
     filePrefix: 'somnio',
     npmPackage: 'amp',
     installUrl: 'https://ampcode.com',
@@ -391,8 +399,11 @@ class AgentRegistry {
   static const _copilot = AgentConfig(
     id: 'copilot',
     displayName: 'GitHub Copilot',
-    installFormat: InstallFormat.markdown,
-    installPath: '{home}/.copilot/agents',
+    installFormat: InstallFormat.skillDir,
+    installPath: '{home}/.copilot/skills',
+    projectInstallPath: '{home}/.github/skills',
+    legacyInstallFormat: InstallFormat.markdown,
+    legacyInstallPath: '{home}/.copilot/agents',
     filePrefix: 'somnio',
     installUrl: 'https://github.com/features/copilot',
   );
@@ -400,8 +411,12 @@ class AgentRegistry {
   static const _windsurf = AgentConfig(
     id: 'windsurf',
     displayName: 'Windsurf',
-    installFormat: InstallFormat.markdown,
-    installPath: '{home}/.windsurf/workflows',
+    installFormat: InstallFormat.skillDir,
+    // Skills, not workflows: workflows are capped at 12,000 characters.
+    installPath: '{home}/.codeium/windsurf/skills',
+    projectInstallPath: '{home}/.windsurf/skills',
+    legacyInstallFormat: InstallFormat.markdown,
+    legacyInstallPath: '{home}/.windsurf/workflows',
     filePrefix: 'somnio',
     installUrl: 'https://windsurf.com',
   );
@@ -428,7 +443,10 @@ class AgentRegistry {
     id: 'amazonq',
     displayName: 'Amazon Q',
     installFormat: InstallFormat.markdown,
-    installPath: '{home}/.amazonq/prompts',
+    // Global prompts; the Q CLI also reads `<cwd>/.amazonq/prompts`.
+    installPath: '{home}/.aws/amazonq/prompts',
+    projectInstallPath: '{home}/.amazonq/prompts',
+    legacyInstallPath: '{home}/.amazonq/prompts',
     filePrefix: 'somnio',
     installUrl: 'https://aws.amazon.com/q/developer/',
   );

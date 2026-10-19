@@ -26,6 +26,28 @@ void main() {
 
       expect(agent.supportsProjectScope, isFalse);
     });
+
+    test('is false for a globalOnly agent', () {
+      const agent = AgentConfig(
+        id: 'amazonq',
+        displayName: 'Amazon Q',
+        installPath: '{home}/.aws/amazonq/prompts',
+        globalOnly: true,
+      );
+
+      expect(agent.supportsProjectScope, isFalse);
+    });
+
+    test('follows a home-anchored projectInstallPath', () {
+      const agent = AgentConfig(
+        id: 'x',
+        displayName: 'X',
+        installPath: '/opt/x/skills',
+        projectInstallPath: '{home}/.x/skills',
+      );
+
+      expect(agent.supportsProjectScope, isTrue);
+    });
   });
 
   group('resolvedScopedInstallPath', () {
@@ -365,6 +387,78 @@ void main() {
         noPrefix.resolvedInstallPath(home: '/h', environment: environment),
         '/h/.x/skills',
       );
+    });
+  });
+
+  group('projectInstallPath', () {
+    const agent = AgentConfig(
+      id: 'copilot',
+      displayName: 'GitHub Copilot',
+      installPath: '{home}/.copilot/skills',
+      projectInstallPath: '{home}/.github/skills',
+    );
+
+    test('is used for the project scope', () {
+      final resolved = agent.resolvedScopedInstallPath(
+        scope: InstallScope.project,
+        home: '/Users/me',
+        projectRoot: '/Users/me/projects/app',
+      );
+
+      expect(resolved, '/Users/me/projects/app/.github/skills');
+    });
+
+    test('is not used for the global scope', () {
+      final resolved = agent.resolvedScopedInstallPath(
+        scope: InstallScope.global,
+        home: '/Users/me',
+        projectRoot: '/Users/me/projects/app',
+      );
+
+      expect(resolved, '/Users/me/.copilot/skills');
+    });
+  });
+
+  group('resolvedProjectInstallPaths', () {
+    test('lists the legacy location after the current one', () {
+      const agent = AgentConfig(
+        id: 'windsurf',
+        displayName: 'Windsurf',
+        installPath: '{home}/.codeium/windsurf/skills',
+        projectInstallPath: '{home}/.windsurf/skills',
+        legacyInstallPath: '{home}/.windsurf/workflows',
+      );
+
+      expect(
+        agent.resolvedProjectInstallPaths(projectRoot: '/p'),
+        ['/p/.windsurf/skills', '/p/.windsurf/workflows'],
+      );
+    });
+
+    test('keeps the legacy location of a globalOnly agent removable', () {
+      const amazonq = AgentConfig(
+        id: 'amazonq',
+        displayName: 'Amazon Q',
+        installPath: '{home}/.aws/amazonq/prompts',
+        globalOnly: true,
+        legacyInstallPath: '{home}/.amazonq/prompts',
+      );
+
+      expect(
+        amazonq.resolvedProjectInstallPaths(projectRoot: '/p'),
+        ['/p/.amazonq/prompts'],
+      );
+    });
+
+    test('is empty for an agent without any project location', () {
+      const agent = AgentConfig(
+        id: 'x',
+        displayName: 'X',
+        installPath: '{home}/.x/prompts',
+        globalOnly: true,
+      );
+
+      expect(agent.resolvedProjectInstallPaths(projectRoot: '/p'), isEmpty);
     });
   });
 }

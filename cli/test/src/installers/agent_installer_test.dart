@@ -1412,6 +1412,240 @@ void main() {
   // ---------------------------------------------------------------------------
   // Moved install root (Antigravity: workflows -> skill directories)
   // ---------------------------------------------------------------------------
+  group('moved to a folder the agent reads', () {
+    late String legacyDir;
+    late String legacyRulesDir;
+    late String installDir;
+
+    setUp(() {
+      legacyDir = p.join(tmp.path, 'old', 'skills');
+      legacyRulesDir = p.join(tmp.path, 'old', 'somnio_rules');
+      installDir = p.join(tmp.path, 'new', 'skills');
+    });
+
+    /// The layout CLI releases before 3.2.16 used for Amp.
+    AgentConfig oldAgent() => AgentConfig(
+          id: 'test-agent',
+          displayName: 'Test Agent',
+          installPath: legacyDir,
+          executionRulesPath: legacyRulesDir,
+        );
+
+    /// The same agent after its move to a folder it reads.
+    AgentConfig movedAgent() => AgentConfig(
+          id: 'test-agent',
+          displayName: 'Test Agent',
+          installFormat: InstallFormat.skillDir,
+          installPath: installDir,
+          legacyInstallFormat: InstallFormat.markdown,
+          legacyInstallPath: legacyDir,
+          legacyExecutionRulesPath: legacyRulesDir,
+        );
+
+    AgentInstaller installerFor(AgentConfig agent) => AgentInstaller(
+          logger: logger,
+          loader: loader,
+          agentConfig: agent,
+          environment: const {},
+        );
+
+    test('moves a recorded skill from the legacy folder to the new one',
+        () async {
+      final bundle = _seedBundle(repoRoot);
+      await installerFor(oldAgent()).install(bundles: [bundle]);
+      expect(File(p.join(legacyDir, 'flutter_health.md')).existsSync(), isTrue);
+
+      await installerFor(movedAgent()).install(bundles: [bundle]);
+
+      expect(
+        File(p.join(installDir, bundle.name, 'SKILL.md')).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(p.join(legacyDir, 'flutter_health.md')).existsSync(),
+        isFalse,
+      );
+      expect(
+        File(p.join(legacyDir, SkillManifest.fileName)).existsSync(),
+        isFalse,
+        reason: 'the emptied legacy manifest is deleted',
+      );
+      expect(Directory(legacyRulesDir).existsSync(), isFalse);
+      expect(SkillManifest.load(installDir).skillNames, [bundle.name]);
+    });
+
+    test('re-anchors the legacy folder at the project root for project scope',
+        () async {
+      final bundle = _seedBundle(repoRoot);
+      final project = p.join(tmp.path, 'project');
+      const agent = AgentConfig(
+        id: 'test-agent',
+        displayName: 'Test Agent',
+        installFormat: InstallFormat.skillDir,
+        installPath: '{home}/.agent/skills',
+        projectInstallPath: '{home}/.github/skills',
+        legacyInstallFormat: InstallFormat.markdown,
+        legacyInstallPath: '{home}/.agent/old',
+      );
+      _writeFile(project, '.agent/old/flutter_health.md', 'OLD');
+      SkillManifest.load(p.join(project, '.agent', 'old'))
+        ..record(
+          skill: bundle.name,
+          kind: 'audit',
+          paths: const [
+            ManifestPath(ManifestRoot.install, 'flutter_health.md'),
+          ],
+        )
+        ..save();
+
+      await AgentInstaller(
+        logger: logger,
+        loader: loader,
+        agentConfig: agent,
+        scope: InstallScope.project,
+        projectRoot: project,
+        environment: const {},
+      ).install(bundles: [bundle]);
+
+      expect(
+        File(p.join(project, '.github', 'skills', bundle.name, 'SKILL.md'))
+            .existsSync(),
+        isTrue,
+      );
+      expect(
+        File(p.join(project, '.agent', 'old', 'flutter_health.md'))
+            .existsSync(),
+        isFalse,
+      );
+    });
+
+    test('migrates through a legacy folder linked to dotfiles', () async {
+      // e.g. GNU stow: the old folder lives in a dotfiles repo, but it is
+      // still this agent's own install.
+      final bundle = _seedBundle(repoRoot);
+      await installerFor(oldAgent()).install(bundles: [bundle]);
+      final dotfiles = p.join(tmp.path, 'dotfiles', 'skills');
+      Directory(p.dirname(dotfiles)).createSync(recursive: true);
+      Directory(legacyDir).renameSync(dotfiles);
+      Link(legacyDir).createSync(dotfiles);
+
+      await installerFor(movedAgent()).install(bundles: [bundle]);
+
+      expect(
+        File(p.join(installDir, bundle.name, 'SKILL.md')).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(p.join(dotfiles, 'flutter_health.md')).existsSync(),
+        isFalse,
+      );
+      expect(SkillManifest.load(dotfiles).isEmpty, isTrue);
+    });
+
+    group('does not migrate a legacy folder that is really', () {
+      late SkillBundle bundle;
+      late String project;
+      late String claudeSkills;
+
+      /// Amp's move, anchored at [project] by a project-scope install.
+      const agent = AgentConfig(
+        id: 'test-agent',
+        displayName: 'Test Agent',
+        installFormat: InstallFormat.skillDir,
+        installPath: '{home}/.config/amp/skills',
+        legacyInstallFormat: InstallFormat.markdown,
+        legacyInstallPath: '{home}/.amp/skills',
+      );
+
+      Future<void> install() => AgentInstaller(
+            logger: logger,
+            loader: loader,
+            agentConfig: agent,
+            scope: InstallScope.project,
+            projectRoot: project,
+            environment: const {},
+          ).install(bundles: [bundle]);
+
+      String? ownLegacyDir() => AgentInstaller.ownLegacyInstallDir(
+            agent,
+            scope: InstallScope.project,
+            home: tmp.path,
+            projectRoot: project,
+          );
+
+      /// Seeds [dir] with a recorded skill, as another install would.
+      void seedInstall(String dir, String content) {
+        _writeFile(dir, 'flutter_health.md', content);
+        SkillManifest.load(dir)
+          ..record(
+            skill: bundle.name,
+            kind: 'audit',
+            paths: const [
+              ManifestPath(ManifestRoot.install, 'flutter_health.md'),
+            ],
+          )
+          ..save();
+      }
+
+      setUp(() {
+        bundle = _seedBundle(repoRoot);
+        project = p.join(tmp.path, 'project');
+        claudeSkills = p.join(project, '.claude', 'skills');
+      });
+
+      test('another agent\'s, through a symlinked parent', () async {
+        // `.amp -> .claude`: `.amp/skills` is Claude Code's install.
+        seedInstall(claudeSkills, 'CLAUDE');
+        Link(p.join(project, '.amp')).createSync(p.join(project, '.claude'));
+
+        await install();
+
+        expect(
+          File(p.join(claudeSkills, 'flutter_health.md')).readAsStringSync(),
+          'CLAUDE',
+        );
+        expect(SkillManifest.load(claudeSkills).skillNames, [bundle.name]);
+        expect(ownLegacyDir(), isNull);
+      });
+
+      test('another agent\'s, linked to it', () async {
+        // `.claude -> .amp`: `.amp/skills` is a real folder, but it is
+        // Claude Code's install.
+        final ampSkills = p.join(project, '.amp', 'skills');
+        seedInstall(ampSkills, 'CLAUDE');
+        Link(p.join(project, '.claude')).createSync(p.join(project, '.amp'));
+
+        await install();
+
+        expect(
+          File(p.join(ampSkills, 'flutter_health.md')).readAsStringSync(),
+          'CLAUDE',
+        );
+        expect(SkillManifest.load(ampSkills).skillNames, [bundle.name]);
+        expect(ownLegacyDir(), isNull);
+      });
+
+      test('the current one', () async {
+        // `.amp -> .config/amp`: migrating would delete the fresh install.
+        final current = p.join(project, '.config', 'amp');
+        Directory(current).createSync(recursive: true);
+        Link(p.join(project, '.amp')).createSync(current);
+
+        await install();
+
+        expect(
+          File(p.join(current, 'skills', bundle.name, 'SKILL.md')).existsSync(),
+          isTrue,
+        );
+        expect(
+          SkillManifest.load(p.join(current, 'skills')).skillNames,
+          [bundle.name],
+        );
+        expect(ownLegacyDir(), isNull);
+      });
+    });
+  });
+
   group('moved install root', () {
     late String legacyDir;
     late String installDir;

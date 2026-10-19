@@ -348,7 +348,9 @@ class _SkillsInstallCommand extends Command<int> {
         projectRoot: projectRoot,
       );
       globalLabel = 'global  ($globalPath)';
-      projectLabel = 'project ($projectPath)';
+      projectLabel = agent.supportsProjectScope
+          ? 'project ($projectPath)'
+          : 'project (no project location; installs globally)';
     }
 
     final index = Prompts.selectOne(
@@ -420,7 +422,7 @@ class _SkillsInstallCommand extends Command<int> {
 // ── Update subcommand ────────────────────────────────────────────────────────
 
 /// One (agent, scope) location with an installed manifest to refresh.
-typedef _UpdateUnit = ({
+typedef SkillsUpdateUnit = ({
   AgentConfig agent,
   InstallScope scope,
   String location,
@@ -538,7 +540,13 @@ class _SkillsUpdateCommand extends Command<int> {
       agents = AgentRegistry.installableAgents;
     }
 
-    final units = _discoverUnits(agents);
+    final units = discoverSkillsUpdateUnits(
+      agents: agents,
+      home: PlatformUtils.homeDirectory,
+      projectRoot: Directory.current.path,
+      environment: PlatformUtils.environment,
+      onWarning: _logger.warn,
+    );
 
     // Only what the discovered manifests cover is refreshed below; any other
     // skills.sh skill is removed without a replacement, which the cleanup
@@ -630,100 +638,13 @@ class _SkillsUpdateCommand extends Command<int> {
     return anyFailed ? ExitCode.software.code : ExitCode.success.code;
   }
 
-  /// Finds every (agent, scope) location with a non-empty
-  /// `.somnio-skills.json` manifest and maps its recorded entries back to
-  /// the current registry.
-  ///
-  /// A manifest entry whose skill no longer exists in the registry (a
-  /// skill that was removed from a later CLI release) is reported via
-  /// [Logger.warn] and skipped rather than silently dropped, so the user
-  /// knows to run `somnio skills remove` to clean it up.
-  List<_UpdateUnit> _discoverUnits(List<AgentConfig> agents) {
-    final home = PlatformUtils.homeDirectory;
-    final projectRoot = Directory.current.path;
-    final units = <_UpdateUnit>[];
-
-    for (final agent in agents) {
-      final scopes = [
-        InstallScope.global,
-        if (agent.supportsProjectScope) InstallScope.project,
-      ];
-      // Run from the home directory, the project scope is the global one:
-      // refresh that location once, as global. Never touch a protected
-      // default location (another Claude Code account's ~/.claude).
-      final seen = {
-        ...agent.resolvedProtectedInstallPaths(
-          home: home,
-          environment: PlatformUtils.environment,
-        ),
-      };
-
-      for (final scope in scopes) {
-        final dir = agent.resolvedScopedInstallPath(
-          scope: scope,
-          home: home,
-          projectRoot: projectRoot,
-          environment: PlatformUtils.environment,
-        );
-        if (!seen.add(realPathOf(dir))) continue;
-        // Skills an earlier release installed at the agent's old location
-        // (Antigravity's workflows) are refreshed into the current one; the
-        // installer then deletes the old copies.
-        final legacyDir = agent.resolvedScopedLegacyInstallPath(
-          scope: scope,
-          home: home,
-          projectRoot: projectRoot,
-        );
-        final entries = {
-          if (legacyDir != null && seen.add(realPathOf(legacyDir)))
-            for (final entry in SkillManifest.load(legacyDir).entries)
-              entry.skill: entry,
-          for (final entry in SkillManifest.load(dir).entries)
-            entry.skill: entry,
-        };
-        if (entries.isEmpty) continue;
-
-        final audit = <SkillBundle>[];
-        final workflow = <WorkflowSkill>[];
-
-        for (final entry in entries.values) {
-          if (entry.kind == 'workflow') {
-            final wf = _findWorkflowByName(entry.skill);
-            if (wf == null) {
-              _warnOrphaned(agent, scope, entry.skill);
-              continue;
-            }
-            workflow.add(wf);
-          } else {
-            final bundle = _findAuditByName(entry.skill);
-            if (bundle == null) {
-              _warnOrphaned(agent, scope, entry.skill);
-              continue;
-            }
-            audit.add(bundle);
-          }
-        }
-
-        if (audit.isEmpty && workflow.isEmpty) continue;
-
-        units.add((
-          agent: agent,
-          scope: scope,
-          location: dir,
-          selection: SkillSelection(audit, workflow),
-        ));
-      }
-    }
-
-    return units;
-  }
-
   /// Lists what a real run would refresh, for `--dry-run`.
-  void _printRefreshPlan(List<_UpdateUnit> units) {
+  void _printRefreshPlan(List<SkillsUpdateUnit> units) {
     _logger.info('');
     if (units.isEmpty) {
-      _logger
-          .info('Would refresh: nothing (no somnio-installed skills found).');
+      _logger.info(
+        'Would refresh: nothing (no somnio-installed skills found).',
+      );
       return;
     }
     _logger.info('Would refresh:');
@@ -740,13 +661,136 @@ class _SkillsUpdateCommand extends Command<int> {
         ..info('    ${names.join(', ')}');
     }
   }
+}
 
-  void _warnOrphaned(AgentConfig agent, InstallScope scope, String skill) {
-    _logger.warn(
+/// Finds every (agent, scope) location with a non-empty
+/// `.somnio-skills.json` manifest for [agents] and maps its recorded entries
+/// back to the current registry.
+///
+/// The global scope resolves against [home] (relocated through
+/// [environment], e.g. `CODEX_HOME`) and the project scope against
+/// [projectRoot]. Run from the home directory the two are the same
+/// location, which is refreshed once, as global.
+///
+/// A manifest entry whose skill no longer exists in the registry (a
+/// skill that was removed from a later CLI release) is reported through
+/// [onWarning] and skipped rather than silently dropped, so the user
+/// knows to run `somnio skills remove` to clean it up. Top-level rather
+/// than a member of `somnio skills update` so it can be tested against
+/// temp directories, like `removeManifestTrackedInstalls`.
+List<SkillsUpdateUnit> discoverSkillsUpdateUnits({
+  required List<AgentConfig> agents,
+  required String home,
+  required String projectRoot,
+  Map<String, String> environment = const {},
+  void Function(String message)? onWarning,
+}) {
+  final units = <SkillsUpdateUnit>[];
+
+  void warnOrphaned(AgentConfig agent, InstallScope scope, String skill) {
+    onWarning?.call(
       '  ${agent.displayName} (${_scopeLabel(scope)}): $skill is no '
       'longer shipped — run "somnio skills remove" to delete it.',
     );
   }
+
+  for (final agent in agents) {
+    final scopes = [
+      InstallScope.global,
+      if (agent.supportsProjectScope) InstallScope.project,
+    ];
+    // Run from the home directory, the project scope is the global one:
+    // refresh that location once, as global. Never touch a protected
+    // default location (another Claude Code account's ~/.claude).
+    final seen = {
+      ...agent.resolvedProtectedInstallPaths(
+        home: home,
+        environment: environment,
+      ),
+    };
+
+    // An agent without a project location now (Amp) cannot refresh what
+    // an earlier release put in its old project folder; say so — unless
+    // that folder is really another agent's (a symlink either way), which
+    // `skills remove --project` would not offer as this agent's.
+    if (!agent.supportsProjectScope) {
+      final legacyProject = AgentInstaller.ownLegacyInstallDir(
+        agent,
+        scope: InstallScope.project,
+        home: home,
+        projectRoot: projectRoot,
+        environment: environment,
+      );
+      if (legacyProject != null &&
+          realPathOf(projectRoot) != realPathOf(home) &&
+          !SkillManifest.load(legacyProject).isEmpty) {
+        onWarning?.call(
+          '  ${agent.displayName}: $legacyProject holds skills '
+          '${agent.displayName} never reads, and it has no project '
+          'location — run "somnio skills remove --project" to delete them.',
+        );
+      }
+    }
+
+    for (final scope in scopes) {
+      final dir = agent.resolvedScopedInstallPath(
+        scope: scope,
+        home: home,
+        projectRoot: projectRoot,
+        environment: environment,
+      );
+      if (!seen.add(realPathOf(dir))) continue;
+      // Skills an earlier release installed at the agent's old location
+      // (Antigravity's workflows) are refreshed into the current one; the
+      // installer then deletes the old copies.
+      final legacyDir = AgentInstaller.ownLegacyInstallDir(
+        agent,
+        scope: scope,
+        home: home,
+        projectRoot: projectRoot,
+        environment: environment,
+      );
+      final entries = {
+        if (legacyDir != null && seen.add(realPathOf(legacyDir)))
+          for (final entry in SkillManifest.load(legacyDir).entries)
+            entry.skill: entry,
+        for (final entry in SkillManifest.load(dir).entries) entry.skill: entry,
+      };
+      if (entries.isEmpty) continue;
+
+      final audit = <SkillBundle>[];
+      final workflow = <WorkflowSkill>[];
+
+      for (final entry in entries.values) {
+        if (entry.kind == 'workflow') {
+          final wf = _findWorkflowByName(entry.skill);
+          if (wf == null) {
+            warnOrphaned(agent, scope, entry.skill);
+            continue;
+          }
+          workflow.add(wf);
+        } else {
+          final bundle = _findAuditByName(entry.skill);
+          if (bundle == null) {
+            warnOrphaned(agent, scope, entry.skill);
+            continue;
+          }
+          audit.add(bundle);
+        }
+      }
+
+      if (audit.isEmpty && workflow.isEmpty) continue;
+
+      units.add((
+        agent: agent,
+        scope: scope,
+        location: dir,
+        selection: SkillSelection(audit, workflow),
+      ));
+    }
+  }
+
+  return units;
 }
 
 // ── Remove subcommand ────────────────────────────────────────────────────────
@@ -754,7 +798,7 @@ class _SkillsUpdateCommand extends Command<int> {
 /// A skill installed at one (agent, scope) location, discovered from that
 /// location's manifest — the only source `remove` ever deletes from. See
 /// [_SkillsRemoveCommand] for why that matters.
-typedef _RemoveCandidate = ({
+typedef SkillsRemoveCandidate = ({
   AgentConfig agent,
   InstallScope scope,
   SkillManifest manifest,
@@ -882,7 +926,13 @@ class _SkillsRemoveCommand extends Command<int> {
       agents = AgentRegistry.installableAgents;
     }
 
-    final candidates = _discoverCandidates(agents, scopes);
+    final candidates = discoverSkillsRemoveCandidates(
+      agents: agents,
+      scopes: scopes,
+      home: PlatformUtils.homeDirectory,
+      projectRoot: Directory.current.path,
+      environment: PlatformUtils.environment,
+    );
 
     // skills.sh copies live only in the global scope and are shared by every
     // agent, so they go only when the global scope is cleared for all agents.
@@ -973,72 +1023,7 @@ class _SkillsRemoveCommand extends Command<int> {
     );
   }
 
-  /// Finds every skill somnio recorded as installed for [agents] across
-  /// [scopes] — see the class doc comment for why manifest membership is
-  /// the only thing that makes a skill eligible for removal.
-  List<_RemoveCandidate> _discoverCandidates(
-    List<AgentConfig> agents,
-    List<InstallScope> scopes,
-  ) {
-    final home = PlatformUtils.homeDirectory;
-    final projectRoot = Directory.current.path;
-    final candidates = <_RemoveCandidate>[];
-
-    for (final agent in agents) {
-      // Global and project can be the same directory (run from home); its
-      // manifest must be processed once. A protected default location
-      // (another Claude Code account's ~/.claude) is never a candidate.
-      final seen = {
-        ...agent.resolvedProtectedInstallPaths(
-          home: home,
-          environment: PlatformUtils.environment,
-        ),
-      };
-      for (final scope in scopes) {
-        if (scope == InstallScope.project && !agent.supportsProjectScope) {
-          continue;
-        }
-        // A relocated global install (CODEX_HOME) may still have an older
-        // one at the default location, and an agent that moved (Antigravity)
-        // one at its legacy location.
-        final legacyDir = agent.resolvedScopedLegacyInstallPath(
-          scope: scope,
-          home: home,
-          projectRoot: projectRoot,
-        );
-        final dirs = [
-          if (scope == InstallScope.global)
-            ...agent.resolvedGlobalInstallPaths(
-              home: home,
-              environment: PlatformUtils.environment,
-            )
-          else
-            agent.resolvedScopedInstallPath(
-              scope: scope,
-              home: home,
-              projectRoot: projectRoot,
-            ),
-          if (legacyDir != null) legacyDir,
-        ];
-        for (final dir in dirs) {
-          if (!seen.add(realPathOf(dir))) continue;
-          final manifest = SkillManifest.load(dir);
-          for (final entry in manifest.entries) {
-            candidates.add((
-              agent: agent,
-              scope: scope,
-              manifest: manifest,
-              entry: entry,
-            ));
-          }
-        }
-      }
-    }
-
-    return candidates;
-  }
-
-  String _candidateLabel(_RemoveCandidate c) =>
+  String _candidateLabel(SkillsRemoveCandidate c) =>
       '${c.entry.skill}  —  ${c.agent.displayName} (${_scopeLabel(c.scope)})';
 
   List<InstallScope> _promptForScopes() {
@@ -1057,7 +1042,7 @@ class _SkillsRemoveCommand extends Command<int> {
   /// saves that location's manifest exactly once (multiple candidates at
   /// the same (agent, scope) share one loaded [SkillManifest] instance, so
   /// dropped entries accumulate before the single save at the end).
-  void _removeAll(List<_RemoveCandidate> selected) {
+  void _removeAll(List<SkillsRemoveCandidate> selected) {
     final home = PlatformUtils.homeDirectory;
     final projectRoot = Directory.current.path;
     final touchedManifests = <SkillManifest>{};
@@ -1114,4 +1099,77 @@ class _SkillsRemoveCommand extends Command<int> {
       if (_verbose) _logger.info('  Removed: $path');
     }
   }
+}
+
+/// Finds every skill somnio recorded as installed for [agents] across
+/// [scopes] — see `somnio skills remove` for why manifest membership is
+/// the only thing that makes a skill eligible for removal.
+///
+/// The global scope resolves against [home] (relocated through
+/// [environment]) and the project scope against [projectRoot]; a location
+/// both resolve to (run from the home directory) is read once. Top-level
+/// for the same reason as [discoverSkillsUpdateUnits].
+List<SkillsRemoveCandidate> discoverSkillsRemoveCandidates({
+  required List<AgentConfig> agents,
+  required List<InstallScope> scopes,
+  required String home,
+  required String projectRoot,
+  Map<String, String> environment = const {},
+}) {
+  final candidates = <SkillsRemoveCandidate>[];
+
+  for (final agent in agents) {
+    // Global and project can be the same directory (run from home); its
+    // manifest must be processed once. A protected default location
+    // (another Claude Code account's ~/.claude) is never a candidate.
+    final seen = {
+      ...agent.resolvedProtectedInstallPaths(
+        home: home,
+        environment: environment,
+      ),
+    };
+    for (final scope in scopes) {
+      // A relocated global install (CODEX_HOME) may still have an older
+      // one at the default location, and an agent that moved (Antigravity,
+      // Windsurf, ...) one at its legacy location, in either scope — unless
+      // that is really another agent's install (a symlink either way),
+      // whose skills would be listed and deleted as this agent's.
+      final dirs = scope == InstallScope.global
+          ? [
+              ...agent.resolvedGlobalInstallPaths(
+                home: home,
+                environment: environment,
+              ),
+              if (AgentInstaller.ownLegacyInstallDir(
+                agent,
+                scope: scope,
+                home: home,
+                projectRoot: projectRoot,
+                environment: environment,
+              )
+                  case final legacyDir?)
+                legacyDir,
+            ]
+          : AgentInstaller.ownProjectInstallDirs(
+              agent,
+              home: home,
+              projectRoot: projectRoot,
+              environment: environment,
+            );
+      for (final dir in dirs) {
+        if (!seen.add(realPathOf(dir))) continue;
+        final manifest = SkillManifest.load(dir);
+        for (final entry in manifest.entries) {
+          candidates.add((
+            agent: agent,
+            scope: scope,
+            manifest: manifest,
+            entry: entry,
+          ));
+        }
+      }
+    }
+  }
+
+  return candidates;
 }
