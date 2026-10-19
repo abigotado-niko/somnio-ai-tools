@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Upgrading moves the old Antigravity workflows out.** New `AgentConfig.legacyInstallPath` records an install directory an agent moved away from. `skills update` also reads the manifest there (`~/.gemini/antigravity/.somnio-skills.json`) and reinstalls those skills into `~/.gemini/config/skills`; every reinstall (`setup`, `skills install`, `skills update`) then deletes the workflow and rule files that manifest recorded for the skill, drops its entry, and removes `somnio_rules/` once only empty directories are left in it. Other workflows in `global_workflows/`, and the folder itself, are never touched; workflows installed before the manifest existed are left for `uninstall --skills`. `skills remove` and `uninstall --skills` also clear what the legacy manifest records, in both scopes, and `uninstall --skills` still removes unrecorded `somnio_` workflows and `somnio_rules/`. Agent detection still recognises Antigravity by a populated `~/.gemini/antigravity`.
 
+## [3.2.13] - 2026-10-16
+
+### Added
+
+- **Every audit can upload its report to the project's Google Drive folder.** `somnio run <audit> --upload` uploads the report through the Google Drive MCP after the format enforcement, following the sharing rules: the `.md` exactly as written, same file name, flat in the project folder, never converted to Google Docs. The folder comes from `--drive-folder` (link or ID), the folder saved for the project in `~/.somnio-reports-prefs.json`, or a prompt, and is resolved before any step runs. Only the upload step may call the Drive MCP tools, and the CLI checks its result against the local report (name, `text/markdown` type, folder and exact byte size); a file with the same name is only replaced after you confirm. `--upload` needs Claude Code with the Google Drive connector, and a failed upload makes `somnio run` exit non-zero.
+- **The audit skills offer the same upload in session.** All 18 audit skills ship `references/drive-upload.md` and a "Drive Upload (optional)" section, so `/flutter-health-audit upload` or "and upload it to Drive" uploads the report from the main session once the audit finishes. The instructions live once in `shared/references/drive-upload.md`, and a test fails when a skill's copy drifts.
+
 ## [3.2.12] - 2026-10-16
 
 ### Fixed
