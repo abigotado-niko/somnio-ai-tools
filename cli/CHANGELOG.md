@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Upgrading moves the old Antigravity workflows out.** New `AgentConfig.legacyInstallPath` records an install directory an agent moved away from. `skills update` also reads the manifest there (`~/.gemini/antigravity/.somnio-skills.json`) and reinstalls those skills into `~/.gemini/config/skills`; every reinstall (`setup`, `skills install`, `skills update`) then deletes the workflow and rule files that manifest recorded for the skill, drops its entry, and removes `somnio_rules/` once only empty directories are left in it. Other workflows in `global_workflows/`, and the folder itself, are never touched; workflows installed before the manifest existed are left for `uninstall --skills`. `skills remove` and `uninstall --skills` also clear what the legacy manifest records, in both scopes, and `uninstall --skills` still removes unrecorded `somnio_` workflows and `somnio_rules/`. Agent detection still recognises Antigravity by a populated `~/.gemini/antigravity`.
 
+## [3.2.14] - 2026-10-19
+
+### Fixed
+
+- **Claude Code installs ignored `CLAUDE_CONFIG_DIR`.** With `CLAUDE_CONFIG_DIR` set, Claude Code reads its settings and user skills from that directory only, but the CLI always wrote to `~/.claude`, so the installed skills and the work-log hook never loaded and `somnio attribution` changed a settings file Claude Code did not read. Skills now install to `$CLAUDE_CONFIG_DIR/skills` (default `~/.claude/skills`), and update, remove, uninstall, status, agent detection and `somnio run` follow it, as they already do for `CODEX_HOME`; the project scope still uses `.claude/skills`. `somnio hooks` writes the script to `$CLAUDE_CONFIG_DIR/hooks/` and registers it in `$CLAUDE_CONFIG_DIR/settings.json` by its absolute path, and `somnio attribution` (and the prompt in `somnio setup`) reads and writes `$CLAUDE_CONFIG_DIR/settings.json`. Skills an earlier release put in `~/.claude/skills` stay there, so run `somnio skills install` (or `somnio setup`) once with the variable set. Unlike with `CODEX_HOME`, remove, update and uninstall do not touch `~/.claude` while the variable is set, because it is often another Claude Code account, not even when run from the home directory, where the project scope is that folder. Run them without the variable to clean it.
+
 ## [3.2.13] - 2026-10-16
 
 ### Added
