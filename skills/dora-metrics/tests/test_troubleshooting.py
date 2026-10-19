@@ -101,6 +101,7 @@ EXPECTED_CODES = {
     "first_marker_no_prior",
     "no_prs_in_range",
     "pr_first_commit_unfetchable",
+    "no_merged_prs_in_window",
 }
 
 

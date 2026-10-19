@@ -48,9 +48,11 @@ the run measures normally.
   `echo $GITLAB_TOKEN`.
 - **Bitbucket:** `echo $BITBUCKET_TOKEN`, or `echo $BITBUCKET_USERNAME` /
   `echo $BITBUCKET_APP_PASSWORD` (there is no CLI fallback for Bitbucket).
+- **Azure DevOps:** `echo $AZURE_DEVOPS_PAT`, or `az account show` (is the
+  Azure CLI logged in?).
 
 Whichever credential you use must have **read** access to every org/group/
-workspace that owns one of the project's repos on that provider (a multi-org
+workspace/project that owns one of the project's repos on that provider (a multi-org
 project needs access to each one).
 
 ### Where to fix
@@ -65,6 +67,10 @@ project needs access to each one).
   repository access token. Option 2: `export BITBUCKET_USERNAME=...` and
   `export BITBUCKET_APP_PASSWORD=...` (an app password, not the account
   password) — both must be set together.
+- **Azure DevOps** — Option 1: `export AZURE_DEVOPS_PAT=xxxx` with a Personal
+  Access Token that has **Code (Read)** scope for those organizations. Option
+  2: run `az login` once — the script asks `az account get-access-token` for an
+  Azure DevOps token automatically.
 
 ---
 
@@ -76,7 +82,7 @@ project needs access to each one).
 The provider's "does this repo exist and can I see it" check returned 404 or
 403, so the script cannot read anything about this repo and skipped it. The
 other repos of the project were still measured. A 404 here does not
-necessarily mean the repo is gone: all three providers return 404 rather than
+necessarily mean the repo is gone: every provider returns 404 rather than
 403 for a private repo a credential cannot see.
 
 ### How to check
@@ -119,14 +125,18 @@ valid — expired, revoked, or malformed. Nothing could be read for this repo.
   `curl -sI -H "PRIVATE-TOKEN: $GITLAB_TOKEN" https://gitlab.com/api/v4/user`.
 - **Bitbucket:** `curl -sI -H "Authorization: Bearer $BITBUCKET_TOKEN" https://api.bitbucket.org/2.0/user`,
   or the equivalent with `-u "$BITBUCKET_USERNAME:$BITBUCKET_APP_PASSWORD"`.
+- **Azure DevOps:** `curl -s -o /dev/null -w "%{http_code}" -u ":$AZURE_DEVOPS_PAT" "https://dev.azure.com/<organization>/_apis/projects?api-version=7.1"`
+  — a `203` (the sign-in page) means the PAT was rejected, just like a `401`.
 
 ### Where to fix
 
 Issue a new credential and export it again, or re-run the provider's CLI login
-(`gh auth login` / `glab auth login`). Classic GitHub tokens and GitLab
+(`gh auth login` / `glab auth login` / `az login`). Classic GitHub tokens and GitLab
 personal access tokens can expire silently; fine-grained tokens also expire
 and lose access when their org approval is revoked. A Bitbucket app password
 is revoked independently of the account password — check it wasn't deleted.
+An Azure DevOps PAT expires on the date chosen when it was created and is
+scoped to the organizations picked then.
 
 ---
 
@@ -160,7 +170,8 @@ also treats a Bitbucket 429 as a rate limit (Atlassian does not document one).
 - Run fewer projects per invocation with `--project`, instead of the whole
   config at once.
 - Make sure a credential is actually being used — unauthenticated requests have
-  drastically lower limits on all three providers.
+  drastically lower limits on GitHub, GitLab and Bitbucket (Azure DevOps
+  rejects them outright).
 
 ---
 
@@ -337,6 +348,33 @@ count looks incomplete (tag/deploy discipline)" section in
 
 Nothing to fix. Use `--window-days N` for a one-off run over a longer window if
 you want to see the surrounding history.
+
+---
+
+<!-- code: no_merged_prs_in_window -->
+## No PRs merged into the production branch inside the window (`deploy_source: merge`)
+
+### What
+
+With `deploy_source: "merge"` every PR/MR merged into `prod_branch` is one
+deploy, so Deployment Frequency is 0 simply because nothing was merged into
+that branch inside the window. There is no tag pattern to mismatch and no
+release to publish: this is a fact about the window, not a setup problem.
+
+### How to check
+
+Open the repo's merged PRs/MRs filtered by the target branch and the window
+dates. If merges did land on that branch, confirm `prod_branch` is spelled
+exactly like the branch they target (`develop` vs `development`, `staging`
+vs `release/staging`) — `branch_not_found` would also be reported when the
+name does not exist at all.
+
+### Where to fix
+
+Nothing to fix when the branch really was quiet. If the team integrates into a
+different branch than the one that auto-deploys, point `prod_branch` at the
+branch that deploys; `--window-days N` shows the surrounding history for a
+one-off run.
 
 ---
 

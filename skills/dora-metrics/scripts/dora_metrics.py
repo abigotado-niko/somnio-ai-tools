@@ -2,10 +2,11 @@
 """
 Fetching skill — DORA (Deployment Frequency + Lead Time for Changes)
 
-Source: the repo's provider API — GitHub (REST + Search), GitLab (REST v4) or
-Bitbucket Cloud (REST 2.0) — NOT local git: lead time depends on the real
-first commit of each PR/MR, something only the provider's PR/MR object
-guarantees reliably regardless of the merge strategy (including squash).
+Source: the repo's provider API — GitHub (REST + Search), GitLab (REST v4),
+Bitbucket Cloud (REST 2.0) or Azure DevOps (Git REST 7.1) — NOT local git:
+lead time depends on the real first commit of each PR/MR, something only the
+provider's PR/MR object guarantees reliably regardless of the merge strategy
+(including squash).
 
 Contract: it ONLY fetches and aggregates. It does not interpret or rank — that
 is a later step, outside the scope of this skill.
@@ -15,20 +16,27 @@ Usage:
     export GITLAB_TOKEN=glpat-xxx # only if a repo has "provider": "gitlab" (or `glab auth login`)
     export BITBUCKET_TOKEN=xxx    # only if a repo has "provider": "bitbucket"
                                   # (or BITBUCKET_USERNAME + BITBUCKET_APP_PASSWORD)
+    export AZURE_DEVOPS_PAT=xxx   # only if a repo has "provider": "azure" (or `az login`)
     python3 dora_metrics.py [--config config/projects.json] [--project "Example Project"] [--out-dir reports]
-        [--branch branch] [--deploy-source release|tag] [--provider github|gitlab|bitbucket] [--window-days N]
+        [--branch branch] [--deploy-source release|tag|merge] [--provider github|gitlab|bitbucket|azure]
+        [--window-days N]
 
 Provider configurable per repo (the "provider" field in the config, default
 "github"). A run can mix providers; each is measured with its own credential,
 and a provider with no credential only turns its own repos into
-`no_credential` stubs.
+`no_credential` stubs. Azure DevOps repos are identified as
+`organization/project/repository`.
 
 Deploy marker configurable per repo (the "deploy_source" field in the config,
-default "release" on GitHub/GitLab and "tag" on Bitbucket, which has no
-Releases API): "release" uses the provider's Releases (tag_name matches
-tag_pattern); "tag" uses plain git tags (without going through Releases),
-resolving the date via the commit they point to, for projects that tag but
-don't publish Releases.
+default "release" on GitHub/GitLab and "tag" on Bitbucket and Azure DevOps,
+which have no Releases API): "release" uses the provider's Releases (tag_name
+matches tag_pattern); "tag" uses plain git tags (without going through
+Releases), resolving the date via the commit they point to, for projects that
+tag but don't publish Releases; "merge" (any provider) treats every PR/MR
+merged into `prod_branch` inside the window as its own deploy, dated by its
+merge, with lead time = first commit of the PR/MR -> its merge — for
+integration branches that deploy themselves on every merge and publish
+neither releases nor tags.
 
 Known limitation (deploy_source=tag, or release with a lightweight tag pointing
 at the merge commit): the timestamp of that commit can differ by 1-2 seconds
@@ -69,7 +77,7 @@ import practice_guidance  # noqa: E402  (sibling module, same reason)
 # Version of the Somnio CLI this script ships with. Kept in sync with
 # `packageVersion` in cli/lib/src/version.dart by `dart run tool/stamp_version.dart`
 # (run from cli/) and checked by cli/test/src/content/version_stamp_test.dart.
-SOMNIO_VERSION = "3.2.15"
+SOMNIO_VERSION = "3.2.16"
 REPORT_TYPE = "dora-metrics"
 
 API_ROOT = "https://api.github.com"
@@ -80,6 +88,12 @@ GITLAB_API_ROOT = "https://gitlab.com/api/v4"
 # Bitbucket Cloud REST 2.0 (https://developer.atlassian.com/cloud/bitbucket/rest/intro/).
 # Cloud only: `api_base` is rejected for bitbucket repos (validate_api_base).
 BITBUCKET_API_ROOT = "https://api.bitbucket.org/2.0"
+# Azure DevOps Services Git REST
+# (https://learn.microsoft.com/rest/api/azure/devops/git/). dev.azure.com only:
+# `api_base` is rejected for azure repos (validate_api_base), Azure DevOps
+# Server (on-premises) is out of scope.
+AZURE_API_ROOT = "https://dev.azure.com"
+AZURE_API_VERSION = "7.1"
 
 DEFAULT_PROVIDER = "github"
 
@@ -107,6 +121,13 @@ PROVIDERS = {
     },
     "bitbucket": {
         "label": "Bitbucket", "api_root": BITBUCKET_API_ROOT,
+        "change": "PR", "changes": "PRs", "change_ref": "#",
+        "releases_label": None,
+        "unpublished_label": None,
+        "api_base": False,
+    },
+    "azure": {
+        "label": "Azure DevOps", "api_root": AZURE_API_ROOT,
         "change": "PR", "changes": "PRs", "change_ref": "#",
         "releases_label": None,
         "unpublished_label": None,
@@ -172,6 +193,33 @@ def get_bitbucket_credential():
     return None
 
 
+# The Azure DevOps resource (application) ID the Azure CLI issues tokens for.
+AZURE_DEVOPS_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
+
+
+def get_azure_credential():
+    """1) AZURE_DEVOPS_PAT env var (a Personal Access Token with Code: Read),
+    sent as Basic auth with an empty username; 2) `az account get-access-token`
+    for the Azure DevOps resource (logged-in Azure CLI), sent as a Bearer
+    token. PATs are the documented path; the CLI token is a convenience for
+    people who already run `az login` day to day."""
+    pat = os.environ.get("AZURE_DEVOPS_PAT")
+    if pat:
+        return {"type": "pat", "token": pat}
+    if shutil.which("az"):
+        try:
+            out = subprocess.run(
+                ["az", "account", "get-access-token", "--resource", AZURE_DEVOPS_RESOURCE_ID,
+                 "--query", "accessToken", "-o", "tsv"],
+                capture_output=True, text=True, timeout=20)
+            token = out.stdout.strip()
+            if out.returncode == 0 and token:
+                return {"type": "bearer", "token": token}
+        except Exception:
+            pass
+    return None
+
+
 class GitHubError(Exception):
     pass
 
@@ -194,13 +242,17 @@ class BitbucketError(_ProviderApiError):
     pass
 
 
+class AzureDevOpsError(_ProviderApiError):
+    pass
+
+
 # Statuses that mean one PR/MR's commit list is gone or hidden, not that the
 # repo is unreachable: that single PR/MR is excluded and the repo is still
 # measured.
 _PER_CHANGE_MISSING_STATUSES = (403, 404)
 
 
-API_ERRORS = (GitHubError, GitLabError, BitbucketError)
+API_ERRORS = (GitHubError, GitLabError, BitbucketError, AzureDevOpsError)
 
 
 def gh_session(token: str) -> requests.Session:
@@ -230,6 +282,18 @@ def bitbucket_session(credential: dict) -> requests.Session:
         s.headers.update({"Authorization": f"Bearer {credential['token']}"})
     else:
         s.auth = (credential["username"], credential["app_password"])
+    return s
+
+
+def azure_session(credential: dict) -> requests.Session:
+    """Basic auth with an empty username for a PAT, Bearer for an Azure CLI
+    token (https://learn.microsoft.com/azure/devops/integrate/get-started/authentication/)."""
+    s = requests.Session()
+    if credential["type"] == "pat":
+        s.auth = ("", credential["token"])
+    else:
+        s.headers.update({"Authorization": f"Bearer {credential['token']}"})
+    s.headers.update({"Accept": "application/json"})
     return s
 
 
@@ -383,8 +447,25 @@ def get_merged_prs_between(session: requests.Session, repo: str, branch: str, st
     q = f"repo:{repo} is:pr is:merged base:{branch} merged:{start_s}..{end_s}"
     prs = []
     for item in gh_paginate(session, f"{api_root or API_ROOT}/search/issues", params={"q": q}):
-        prs.append({"number": item["number"], "title": item.get("title", "")})
+        pr = {"number": item["number"], "title": item.get("title", "")}
+        # Carried when the search item has it, for deploy_source "merge"; a
+        # PR without it gets its merge time from get_pr_merged_at there.
+        merged = (item.get("pull_request") or {}).get("merged_at")
+        if merged:
+            pr["merged_at"] = parse_ts(merged)
+        prs.append(pr)
     return prs
+
+
+def get_pr_merged_at(session: requests.Session, repo: str, pr_number: int, api_root: str = None):
+    """merged_at of one PR, from the PR object (deploy_source "merge"). None
+    when the PR can't be read or carries no merge time."""
+    resp = session.get(f"{api_root or API_ROOT}/repos/{repo}/pulls/{pr_number}")
+    if not resp.ok:
+        return None
+    data = resp.json()
+    merged = data.get("merged_at") if isinstance(data, dict) else None
+    return parse_ts(merged) if merged else None
 
 
 def get_release_tag_names(session: requests.Session, repo: str, api_root: str = None) -> dict:
@@ -546,9 +627,12 @@ def get_gitlab_merged_mrs_between(session: requests.Session, repo: str, branch: 
     mrs = []
     for item in gitlab_paginate(session, f"{_gitlab_project_url(repo, api_root)}/merge_requests", params=params):
         merged_at = item.get("merged_at")
-        if merged_at and not (start <= parse_iso_ts(merged_at) <= end):
-            continue
-        mrs.append({"number": item["iid"], "title": item.get("title", "")})
+        mr = {"number": item["iid"], "title": item.get("title", "")}
+        if merged_at:
+            mr["merged_at"] = parse_iso_ts(merged_at)
+            if not (start <= mr["merged_at"] <= end):
+                continue
+        mrs.append(mr)
     return mrs
 
 
@@ -715,7 +799,7 @@ def get_bitbucket_merged_prs_between(session: requests.Session, repo: str, branc
         candidates = _bitbucket_merged_prs_since(session, repo, branch, start, api_root)
         if cache is not None:
             cache[key] = {"since": start, "prs": candidates}
-    return [{"number": pr["number"], "title": pr["title"]}
+    return [{"number": pr["number"], "title": pr["title"], "merged_at": pr["merged_at"]}
             for pr in candidates if start <= pr["merged_at"] <= end]
 
 
@@ -745,6 +829,177 @@ def get_bitbucket_pr_first_commit_ts(session: requests.Session, repo: str, pr_id
     return min(dates) if dates else None
 
 
+# --- Azure DevOps (Git REST 7.1) --------------------------------------------
+# https://learn.microsoft.com/rest/api/azure/devops/git/ — every list is
+# `{value, count}`, continued through the `x-ms-continuationtoken` response
+# header (refs) or `$top`/`$skip` (pull requests). No Releases API in Git:
+# deploy markers are tags or merges. Repos are `organization/project/repository`.
+
+def _json(resp):
+    """Azure DevOps answers with a UTF-8 BOM on some endpoints, which
+    `resp.json()` chokes on. Strips it before decoding."""
+    text = resp.text if isinstance(getattr(resp, "text", None), str) else ""
+    if text and text.lstrip().startswith("﻿"):
+        return json.loads(text.lstrip().lstrip("﻿"))
+    return resp.json()
+
+
+def _azure_check(resp, url: str) -> None:
+    """Raises AzureDevOpsError with the same message prefixes gh_paginate
+    uses. A bad or expired PAT gets a 203 with the HTML sign-in page instead
+    of a 401, so a 203 is read as a 401."""
+    if resp.status_code in (401, 203):
+        raise AzureDevOpsError(
+            "401 Unauthorized. Check that AZURE_DEVOPS_PAT (or the `az login` token) is valid and has "
+            "Code (Read) access to ALL the projects of the project's Azure DevOps repos.",
+            status=401,
+        )
+    if resp.status_code == 429:
+        raise AzureDevOpsError(f"Rate limit reached: {(resp.text or '')[:300]}", status=429)
+    if resp.status_code == 404:
+        raise AzureDevOpsError(f"404 Not Found at {url} — does the repo exist and does the credential have access?",
+                               status=404)
+    if not resp.ok:
+        raise AzureDevOpsError(f"Azure DevOps API error {resp.status_code} at {url}: {(resp.text or '')[:300]}",
+                               status=resp.status_code)
+
+
+def azure_paginate(session: requests.Session, url: str, params: dict = None):
+    """GET following Azure DevOps pagination. Yields items from `value`.
+    Continues through the `x-ms-continuationtoken` header when the response
+    carries one, otherwise through `$skip` when the request set `$top` and the
+    page came back full."""
+    params = dict(params or {})
+    params.setdefault("api-version", AZURE_API_VERSION)
+    use_skip = "$top" in params
+    skip = int(params.get("$skip", 0))
+    while True:
+        if use_skip:
+            params["$skip"] = skip
+        resp = session.get(url, params=params)
+        _azure_check(resp, url)
+        data = _json(resp)
+        items = data.get("value", []) if isinstance(data, dict) else data
+        for item in items:
+            yield item
+        token = (getattr(resp, "headers", None) or {}).get("x-ms-continuationtoken")
+        if token:
+            params["continuationToken"] = token
+            continue
+        if use_skip and len(items) >= int(params["$top"]):
+            skip += len(items)
+            continue
+        return
+
+
+def azure_repo_parts(repo: str):
+    """`organization/project/repository` -> (org, project, repository). The
+    project and repository names may hold spaces or dots; they are URL-quoted
+    where they appear in a path."""
+    parts = repo.split("/")
+    if len(parts) != 3 or not all(parts):
+        raise ValueError(f"Azure DevOps repos are identified as organization/project/repository, got {repo!r}.")
+    return parts[0], parts[1], parts[2]
+
+
+def _azure_repo_url(repo: str, api_root: str = None) -> str:
+    org, project, name = azure_repo_parts(repo)
+    root = api_root or AZURE_API_ROOT
+    return f"{root}/{quote(org, safe='')}/{quote(project, safe='')}/_apis/git/repositories/{quote(name, safe='')}"
+
+
+def _azure_tag_name(ref: dict) -> str:
+    return (ref.get("name") or "").replace("refs/tags/", "", 1)
+
+
+def get_azure_tags(session: requests.Session, repo: str, tag_pattern: str, api_root: str = None):
+    """Tags whose name matches tag_pattern, ascending order. An annotated tag
+    (the ref has a `peeledObjectId`) is dated by its tag object's `taggedBy`
+    date, a lightweight one by the commit it points to — the same
+    tagging-date/commit-date split get_prod_tags makes for GitHub."""
+    base = _azure_repo_url(repo, api_root)
+    pattern = re.compile(tag_pattern)
+    tags = []
+    for ref in azure_paginate(session, f"{base}/refs", params={"filter": "tags/"}):
+        name = _azure_tag_name(ref)
+        if not pattern.match(name):
+            continue
+        date_str, url = None, None
+        if ref.get("peeledObjectId"):
+            resp = session.get(f"{base}/annotatedtags/{ref['objectId']}", params={"api-version": AZURE_API_VERSION})
+            if resp.ok:
+                data = _json(resp)
+                if isinstance(data, dict):
+                    date_str = (data.get("taggedBy") or {}).get("date")
+                    url = data.get("url")
+            commit_id = ref["peeledObjectId"]
+        else:
+            commit_id = ref.get("objectId")
+        if not date_str and commit_id:
+            resp = session.get(f"{base}/commits/{commit_id}", params={"api-version": AZURE_API_VERSION})
+            if resp.ok:
+                data = _json(resp)
+                if isinstance(data, dict):
+                    date_str = (data.get("committer") or {}).get("date") or (data.get("author") or {}).get("date")
+                    url = url or data.get("remoteUrl")
+        if not date_str:
+            continue
+        tags.append({"tag": name, "published_at": parse_iso_ts(date_str), "url": url})
+    tags.sort(key=lambda x: x["published_at"])
+    return tags
+
+
+def get_azure_all_tag_names(session: requests.Session, repo: str, api_root: str = None) -> list:
+    """Every git tag name in the repo, unfiltered."""
+    base = _azure_repo_url(repo, api_root)
+    return [_azure_tag_name(ref)
+            for ref in azure_paginate(session, f"{base}/refs", params={"filter": "tags/"}) if ref.get("name")]
+
+
+def get_azure_pr_first_commit_ts(session: requests.Session, repo: str, pr_id: int, api_root: str = None):
+    """Timestamp of the PR's first commit, read from the PR's own commit list
+    (stays correct after a squash); the earliest date wins.
+
+    A 403/404 on this one PR's commit list returns None, so only this PR is
+    excluded (pr_first_commit_unfetchable) instead of the whole repo. A 401 or
+    a rate limit still raises: those affect every request."""
+    base = _azure_repo_url(repo, api_root)
+    dates = []
+    try:
+        for c in azure_paginate(session, f"{base}/pullrequests/{pr_id}/commits"):
+            d = (c.get("author") or {}).get("date") or (c.get("committer") or {}).get("date")
+            if d:
+                dates.append(parse_iso_ts(d))
+    except AzureDevOpsError as e:
+        if e.status in _PER_CHANGE_MISSING_STATUSES:
+            return None
+        raise
+    return min(dates) if dates else None
+
+
+def get_azure_merged_prs_between(session: requests.Session, repo: str, branch: str, start: datetime,
+                                 end: datetime, api_root: str = None):
+    """Completed PRs into `branch` whose `closedDate` (= the merge) is between
+    start and end (both inclusive, like GitHub's `merged:start..end`). The API
+    returns them newest first and pages only with `$top`/`$skip`, so the scan
+    stops at the first PR closed before `start`."""
+    base = _azure_repo_url(repo, api_root)
+    params = {"searchCriteria.status": "completed", "searchCriteria.targetRefName": f"refs/heads/{branch}",
+              "$top": 100}
+    prs = []
+    for item in azure_paginate(session, f"{base}/pullrequests", params=params):
+        closed = item.get("closedDate")
+        if not closed:
+            continue
+        merged_at = parse_iso_ts(closed)
+        if merged_at < start:
+            break  # newest first: everything after this is older than the window
+        if merged_at > end:
+            continue
+        prs.append({"number": item["pullRequestId"], "title": item.get("title", ""), "merged_at": merged_at})
+    return prs
+
+
 # --- Provider dispatch -------------------------------------------------------
 
 def _is_rate_limited(resp) -> bool:
@@ -755,11 +1010,39 @@ def _is_429(resp) -> bool:
     return resp.status_code == 429
 
 
+def _is_401(resp) -> bool:
+    return resp.status_code == 401
+
+
+def _is_404(resp) -> bool:
+    return resp.status_code == 404
+
+
+def _azure_unauthorized(resp) -> bool:
+    """A bad PAT gets a 203 with the HTML sign-in page instead of a 401."""
+    return resp.status_code in (401, 203)
+
+
+def _azure_branch_missing(resp) -> bool:
+    """The branch lookup is a refs listing filtered by name: a missing branch
+    is a 200 with an empty `value`, not a 404."""
+    if resp.status_code == 404:
+        return True
+    if resp.status_code != 200:
+        return False
+    try:
+        data = _json(resp)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and not data.get("value")
+
+
 # Each builder returns one provider's operations. Everything else asks
 # `_provider_api` for "release", "tag", "merged", "first_commit",
-# "release_names", "tag_names", "preflight_urls" or "rate_limited", and never
-# branches on the provider itself. A provider with no Releases API has no
-# "release" / "release_names" entries.
+# "release_names", "tag_names", "preflight_urls", "rate_limited",
+# "unauthorized", "branch_missing" or "merged_at", and never branches on the
+# provider itself. A provider with no Releases API has no "release" /
+# "release_names" entries.
 #
 # The metric entries are lambdas so the module-level function is looked up at
 # call time (the tests patch them). `kw` carries `api_root` only when the repo
@@ -770,7 +1053,13 @@ def _is_429(resp) -> bool:
 # names are URL-encoded for GitLab and Bitbucket, whose branch endpoints take
 # the name as one path segment, while GitHub keeps the request it always made.
 # "rate_limited" reads a response: GitHub signals its rate limit as a 403 with
-# "rate limit" in the body, GitLab and Bitbucket as a plain 429.
+# "rate limit" in the body, GitLab, Bitbucket and Azure DevOps as a plain 429.
+# "unauthorized" and "branch_missing" read the preflight responses: a 401 and
+# a 404 everywhere but Azure DevOps (see _azure_unauthorized and
+# _azure_branch_missing).
+# "merged_at" resolves one PR's merge time for deploy_source "merge" when the
+# merged listing didn't carry it; only GitHub (whose Search items may lack it)
+# has one, the other listings always carry the merge time.
 
 def _github_api(kw: dict, root: str, now: datetime) -> dict:
     return {
@@ -780,8 +1069,11 @@ def _github_api(kw: dict, root: str, now: datetime) -> dict:
         "first_commit": lambda s, r, n: get_pr_first_commit_ts(s, r, n, **kw),
         "release_names": lambda s, r: get_release_tag_names(s, r, **kw),
         "tag_names": lambda s, r: get_all_tag_names(s, r, **kw),
+        "merged_at": lambda s, r, n: get_pr_merged_at(s, r, n, **kw),
         "preflight_urls": lambda r, b: (f"{root}/repos/{r}", f"{root}/repos/{r}/branches/{b}"),
         "rate_limited": _is_rate_limited,
+        "unauthorized": _is_401,
+        "branch_missing": _is_404,
     }
 
 
@@ -799,6 +1091,8 @@ def _gitlab_api(kw: dict, root: str, now: datetime) -> dict:
         "tag_names": lambda s, r: get_gitlab_all_tag_names(s, r, **kw),
         "preflight_urls": preflight_urls,
         "rate_limited": _is_429,
+        "unauthorized": _is_401,
+        "branch_missing": _is_404,
     }
 
 
@@ -817,6 +1111,25 @@ def _bitbucket_api(kw: dict, root: str, now: datetime) -> dict:
         "tag_names": lambda s, r: get_bitbucket_all_tag_names(s, r, **kw),
         "preflight_urls": preflight_urls,
         "rate_limited": _is_429,
+        "unauthorized": _is_401,
+        "branch_missing": _is_404,
+    }
+
+
+def _azure_api(kw: dict, root: str, now: datetime) -> dict:
+    def preflight_urls(repo, branch):
+        repository = _azure_repo_url(repo, root)
+        return repository, f"{repository}/refs?filter=heads/{quote(branch, safe='/')}"
+
+    return {
+        "tag": lambda s, r, p: get_azure_tags(s, r, p, **kw),
+        "merged": lambda s, r, b, a, z: get_azure_merged_prs_between(s, r, b, a, z, **kw),
+        "first_commit": lambda s, r, n: get_azure_pr_first_commit_ts(s, r, n, **kw),
+        "tag_names": lambda s, r: get_azure_all_tag_names(s, r, **kw),
+        "preflight_urls": preflight_urls,
+        "rate_limited": _is_429,
+        "unauthorized": _azure_unauthorized,
+        "branch_missing": _azure_branch_missing,
     }
 
 
@@ -824,6 +1137,7 @@ _PROVIDER_APIS = {
     "github": _github_api,
     "gitlab": _gitlab_api,
     "bitbucket": _bitbucket_api,
+    "azure": _azure_api,
 }
 
 
@@ -844,8 +1158,8 @@ def preflight_repo(session: requests.Session, repo: str, branch: str, provider: 
 
     A returned issue with impact "blocked" means the repo cannot be measured;
     the caller skips it and keeps going with the rest of the project. A 404 on
-    the repo means "not found or not visible to this credential" on all three
-    providers, so it is reported as unreachable, never as missing."""
+    the repo means "not found or not visible to this credential" on every
+    provider, so it is reported as unreachable, never as missing."""
     issues = []
     label = provider_label(provider)
     root = api_root or PROVIDERS[provider]["api_root"]
@@ -854,7 +1168,7 @@ def preflight_repo(session: requests.Session, repo: str, branch: str, provider: 
     rate_limited = api["rate_limited"]
 
     resp = session.get(repo_url)
-    if resp.status_code == 401:
+    if api["unauthorized"](resp):
         return [make_issue("token_unauthorized", "blocked",
                            f"{repo}: 401 Unauthorized from the {label} API — the credential is not valid for this repo.")]
     if rate_limited(resp):
@@ -872,7 +1186,7 @@ def preflight_repo(session: requests.Session, repo: str, branch: str, provider: 
                            evidence={"status": resp.status_code})]
 
     branch_resp = session.get(branch_url)
-    if branch_resp.status_code == 404:
+    if api["branch_missing"](branch_resp):
         issues.append(make_issue(
             "branch_not_found", "partial",
             f"{repo}: branch '{branch}' does not exist — Lead Time can't be measured against it "
@@ -908,8 +1222,22 @@ def diagnose_markers(session: requests.Session, repo: str, tag_pattern: str, dep
 
     Costs nothing when markers were found inside the window: the extra API calls
     run only on the paths that need evidence. A provider with no Releases API
-    (Bitbucket) has only one kind of marker, so there is no "other source" to
-    compare against and no draft to look for."""
+    (Bitbucket, Azure DevOps) has only one kind of marker, so there is no
+    "other source" to compare against and no draft to look for.
+
+    With deploy_source "merge" the marker is the merge itself: there is no
+    pattern to mismatch and no draft to explain, so a zero is a factual note
+    and no API call is made."""
+    if deploy_source == "merge":
+        if deployment_frequency == 0:
+            return [make_issue(
+                "no_merged_prs_in_window", "none",
+                f"{repo}: 0 {PROVIDERS[provider]['changes']} merged into the production branch in the "
+                "window — with deploy_source 'merge' every merge is a deploy, so nothing was deployed.",
+                evidence={"deploy_source": deploy_source},
+            )]
+        return []
+
     if markers_total > 0:
         if deployment_frequency == 0:
             return [make_issue(
@@ -976,7 +1304,7 @@ def diagnose_markers(session: requests.Session, repo: str, tag_pattern: str, dep
     return issues
 
 
-VALID_DEPLOY_SOURCES = ("release", "tag")
+VALID_DEPLOY_SOURCES = ("release", "tag", "merge")
 
 
 # --- Issue model -----------------------------------------------------------
@@ -1002,6 +1330,7 @@ ISSUE_CODES = (
     "first_marker_no_prior",
     "no_prs_in_range",
     "pr_first_commit_unfetchable",
+    "no_merged_prs_in_window",
     "api_error",
 )
 
@@ -1112,6 +1441,9 @@ def compute_repo_metrics(session: requests.Session, repo: str, branch: str,
     api = _provider_api(provider, api_root, now)
     spec = PROVIDERS[provider]
 
+    if deploy_source == "merge":
+        return _compute_merge_metrics(session, repo, branch, window_start, now, api, spec)
+
     if deploy_source == "tag":
         all_deploys = api["tag"](session, repo, tag_pattern)
         marker_label = "Tag"
@@ -1191,6 +1523,77 @@ def compute_repo_metrics(session: requests.Session, repo: str, branch: str,
         "issues": issues,
         # Derived, kept for consumers that read the raw strings (the E2E suite
         # asserts on them). Issues with impact "none" are notes, not warnings.
+        "warnings": [i["message"] for i in issues if i["impact"] != "none"],
+    }
+
+
+def _change_name(spec: dict, number) -> str:
+    """How a PR/MR is named in a message and in a merge deploy's tag:
+    "PR #12" on GitHub, Bitbucket and Azure DevOps, "MR !12" on GitLab."""
+    return f"{spec['change']} {spec['change_ref']}{number}"
+
+
+def _compute_merge_metrics(session, repo: str, branch: str, window_start: datetime, now: datetime,
+                           api: dict, spec: dict) -> dict:
+    """deploy_source "merge": every PR/MR merged into the production branch
+    inside the window is one deploy, dated by its merge; its lead time runs
+    from its first commit to that merge. Nothing is bounded by a previous
+    marker, so the whole window is one population and there is no "first
+    marker" gap. Same result shape as the marker path, with each merge's
+    "PR #n" / "MR !n" standing in for the tag."""
+    issues = []
+    deploys = []
+    for pr in api["merged"](session, repo, branch, window_start, now):
+        merged_at = pr.get("merged_at")
+        if merged_at is None and "merged_at" in api:
+            merged_at = api["merged_at"](session, repo, pr["number"])
+        if merged_at is None:
+            issues.append(make_issue(
+                "pr_first_commit_unfetchable", "partial",
+                f"{_change_name(spec, pr['number'])}: could not resolve its merge time, it's excluded.",
+                evidence={"pr": pr["number"], "deploy_source": "merge"},
+            ))
+            continue
+        deploys.append({**pr, "merged_at": merged_at})
+    deploys.sort(key=lambda d: d["merged_at"])
+
+    lead_times_hours, lt_detail = [], []
+    for pr in deploys:
+        first_commit_ts = api["first_commit"](session, repo, pr["number"])
+        if first_commit_ts is None:
+            issues.append(make_issue(
+                "pr_first_commit_unfetchable", "partial",
+                f"{_change_name(spec, pr['number'])}: could not fetch the first commit, it's excluded.",
+                evidence={"pr": pr["number"], "deploy_source": "merge"},
+            ))
+            continue
+        lead_time_h = (pr["merged_at"] - first_commit_ts).total_seconds() / 3600
+        lead_times_hours.append(lead_time_h)
+        lt_detail.append({
+            "pr": pr["number"],
+            "title": pr.get("title", ""),
+            "deploy_tag": _change_name(spec, pr["number"]),
+            "first_commit_ts": fmt_ts(first_commit_ts),
+            "deploy_ts": fmt_ts(pr["merged_at"]),
+            "lead_time_hours": round(lead_time_h, 1),
+        })
+
+    lead_time_median_hours = round(statistics.median(lead_times_hours), 1) if lead_times_hours else None
+    return {
+        "repo": repo,
+        "prod_branch": branch,
+        "deploy_source": "merge",
+        "window_start": fmt_ts(window_start),
+        "window_end": fmt_ts(now),
+        "deployment_frequency": len(deploys),
+        "deploys_in_window": [{"tag": _change_name(spec, d["number"]), "published_at": fmt_ts(d["merged_at"]),
+                               "url": d.get("url")} for d in deploys],
+        "lead_time_median_hours": lead_time_median_hours,
+        "lead_time_n": len(lead_times_hours),
+        "lead_time_detail": lt_detail,
+        "markers_total": len(deploys),
+        "latest_marker_at": fmt_ts(deploys[-1]["merged_at"]) if deploys else None,
+        "issues": issues,
         "warnings": [i["message"] for i in issues if i["impact"] != "none"],
     }
 
@@ -1398,7 +1801,8 @@ def validate_scoped_overrides(args) -> None:
 
 def effective_deploy_source(repo_cfg: dict) -> str:
     """The repo's deploy_source, or its provider's default when omitted:
-    "release" on GitHub and GitLab, "tag" on Bitbucket (no Releases API)."""
+    "release" on GitHub and GitLab, "tag" on Bitbucket and Azure DevOps (no
+    Releases API)."""
     explicit = repo_cfg.get("deploy_source")
     if explicit:
         return explicit
@@ -1406,13 +1810,15 @@ def effective_deploy_source(repo_cfg: dict) -> str:
 
 
 def _has_releases(provider: str) -> bool:
-    """False only for a known provider with no Releases API (Bitbucket). An
+    """False only for a known provider with no Releases API (Bitbucket, Azure
+    DevOps). An
     unknown provider is validate_providers' error to report, not this one's."""
     return provider not in PROVIDERS or PROVIDERS[provider]["releases_label"] is not None
 
 
 def validate_providers(projects) -> None:
-    """Validates that each repo's provider is one of the supported values."""
+    """Validates that each repo's provider is one of the supported values, and
+    that an Azure DevOps repo is named `organization/project/repository`."""
     for project in projects:
         for repo_cfg in project["repos"]:
             provider = repo_provider(repo_cfg)
@@ -1421,6 +1827,8 @@ def validate_providers(projects) -> None:
                     f"invalid provider '{provider}' in repo {repo_cfg['repo']} "
                     f"(valid: {', '.join(VALID_PROVIDERS)})."
                 )
+            if provider == "azure":
+                azure_repo_parts(repo_cfg["repo"])
 
 
 def validate_deploy_sources(projects) -> None:
@@ -1439,14 +1847,14 @@ def validate_deploy_sources(projects) -> None:
             if ds == "release" and not _has_releases(provider):
                 raise ValueError(
                     f"deploy_source 'release' is not supported in repo {repo_cfg['repo']}: "
-                    f"{provider_label(provider)} has no Releases API — use \"tag\" (or omit the field)."
+                    f"{provider_label(provider)} has no Releases API — use \"tag\" or \"merge\" (or omit the field)."
                 )
 
 
 def validate_api_base(projects) -> None:
     """`api_base` points GitHub (Enterprise) or GitLab (self-hosted) at another
     API root. A provider whose PROVIDERS entry says `api_base: False`
-    (Bitbucket, Cloud only) rejects it. An unknown provider is
+    (Bitbucket and Azure DevOps, cloud only) rejects it. An unknown provider is
     validate_providers' error to report, not this one's."""
     for project in projects:
         for repo_cfg in project["repos"]:
@@ -1466,8 +1874,8 @@ def classify_api_error(provider: str, repo: str, message: str) -> dict:
     embeds the request URL (and, for the generic shape, the provider's response
     body), so a repo named `org/app-401` would otherwise be reported as an auth
     failure and its owner sent to reissue a perfectly good token. The prefixes
-    below are the shapes gh_paginate, gitlab_paginate and bitbucket_paginate
-    raise."""
+    below are the shapes gh_paginate, gitlab_paginate, bitbucket_paginate and
+    azure_paginate raise."""
     label = provider_label(provider)
     if message.startswith("401"):
         return make_issue("token_unauthorized", "blocked",
@@ -1724,6 +2132,7 @@ _CREDENTIALS = {
     "github": (lambda: get_github_token(), lambda token: gh_session(token)),
     "gitlab": (lambda: get_gitlab_token(), lambda token: gitlab_session(token)),
     "bitbucket": (lambda: get_bitbucket_credential(), lambda cred: bitbucket_session(cred)),
+    "azure": (lambda: get_azure_credential(), lambda cred: azure_session(cred)),
 }
 
 
@@ -1739,7 +2148,8 @@ def open_sessions(providers) -> dict:
 
 def main():
     ap = argparse.ArgumentParser(
-        description="DORA fetching (Deployment Frequency + Lead Time) from the GitHub, GitLab or Bitbucket API.")
+        description="DORA fetching (Deployment Frequency + Lead Time) from the GitHub, GitLab, Bitbucket or "
+                    "Azure DevOps API.")
     ap.add_argument("--config", default=os.path.join(os.path.dirname(__file__), "..", "config", "projects.json"))
     ap.add_argument("--project", default=None, help="Project name to run (default: all projects in the config).")
     ap.add_argument("--out-dir", default=None,

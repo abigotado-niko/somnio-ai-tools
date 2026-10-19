@@ -2,16 +2,16 @@
 name: dora-metrics
 description: >
   Fetches the DORA metrics Deployment Frequency and Lead Time for Changes, per
-  project and per repo, from the provider's API (GitHub, GitLab, or Bitbucket
-  — not local git). Use this skill whenever the user asks to run or update the
+  project and per repo, from the provider's API (GitHub, GitLab, Bitbucket, or
+  Azure DevOps — not local git). Use this skill whenever the user asks to run or update the
   DORA metrics, measure the deployment frequency or lead time of a project
   (e.g. "Example Project"), generate the biweekly metrics report, or asks how
   many deploys a project made or how long a change takes to reach production —
-  regardless of which of the three providers the project's repos live on.
+  regardless of which of the four providers the project's repos live on.
   Also trigger on phrases like: "run the DORA metrics", "metrics for
   Example Project", "deployment frequency for [project]", "lead time for
   [project]", "biweekly metrics report", "how many deploys did we do this
-  sprint", "add a GitLab/Bitbucket project to the DORA metrics".
+  sprint", "add a GitLab/Bitbucket/Azure DevOps project to the DORA metrics".
 allowed-tools: Read, Write, Edit, Bash, Agent
 ---
 
@@ -34,27 +34,40 @@ the moment a metric is used to evaluate people, it stops being a good metric
 CI is uniform (GitHub Actions) but CD is heterogeneous (mobile/web/backend
 deploy differently), so instead of measuring the actual CD we use a uniform
 marker: a **Release with a semver tag `vX.Y.Z`** on each repo's production
-branch (a plain tag where the provider has no Releases API). All data comes
+branch (a plain tag where the provider has no Releases API), or — for repos
+whose integration branch deploys itself on every merge and that publish
+neither releases nor tags — **every PR/MR merged into that branch**
+(`deploy_source: "merge"`). All data comes
 from the repo's **provider API** — never a local git clone — because lead time
 depends on the real first commit of each PR/MR, and that is only reliable when
 read from the provider's PR/MR object (it stays correct even if the merge was a
 squash; the git log of `main` does not guarantee it).
 
-Each repo belongs to one of three supported providers, declared per repo in
+Each repo belongs to one of four supported providers, declared per repo in
 `config/projects.json` (`provider`, default `"github"`):
 
 | Provider | Repo identifier format | Deploy marker |
 |---|---|---|
-| `github` (default) | `org/repo` | GitHub Release, or plain tag |
-| `gitlab` | project path, e.g. `group/project` or `group/subgroup/project` | GitLab Release, or plain tag |
-| `bitbucket` | `workspace/repo_slug` | Plain tag only — Bitbucket Cloud has no Releases API |
+| `github` (default) | `org/repo` | GitHub Release, plain tag, or merge |
+| `gitlab` | project path, e.g. `group/project` or `group/subgroup/project` | GitLab Release, plain tag, or merge |
+| `bitbucket` | `workspace/repo_slug` | Plain tag or merge — Bitbucket Cloud has no Releases API |
+| `azure` | `organization/project/repository` (Azure DevOps) | Plain tag or merge — Azure DevOps has no Releases API |
+
+`deploy_source` per repo picks the marker: `"release"` (default on GitHub and
+GitLab), `"tag"` (default on Bitbucket and Azure DevOps) or `"merge"`. With
+`"merge"` every PR/MR merged into `prod_branch` inside the window is one
+deploy, dated by its merge, and its lead time runs from its first commit to
+that merge — the right marker for a branch that auto-deploys on every merge
+(`develop`, `staging`) with no release or tag ceremony. It changes what the
+number means: it is integration/CD cadence, not production releases, so say so
+when reporting it.
 
 A single project — and even a single run — can mix providers across repos: a
 project's frontend can live on GitHub while its backend lives on GitLab, and
-each is measured with its own credential. Bitbucket Server/Data Center and
-GitHub Enterprise beyond `api_base` overrides are out of scope — this talks to
-GitHub.com, GitLab.com (or a self-hosted instance via `api_base`), and
-Bitbucket Cloud.
+each is measured with its own credential. Bitbucket Server/Data Center,
+Azure DevOps Server (on-prem) and GitHub Enterprise beyond `api_base`
+overrides are out of scope — this talks to GitHub.com, GitLab.com (or a
+self-hosted instance via `api_base`), Bitbucket Cloud and dev.azure.com.
 
 Projects can be mono-repo or multi-repo. In multi-repo, each repo is measured
 and reported **independently, never combined**: if a project deploys the
@@ -105,21 +118,25 @@ ask them directly for the missing details and add them to
 
 - Project name.
 - The repo(s) that make it up, one or several (multi-repo), and **which
-  provider each one is on** (`github`, `gitlab`, or `bitbucket` — default
-  `github`, but confirm rather than assume when the user doesn't say). The
-  identifier format depends on the provider: `org/repo` for GitHub, a project
-  path for GitLab, `workspace/repo_slug` for Bitbucket.
+  provider each one is on** (`github`, `gitlab`, `bitbucket` or `azure` —
+  default `github`, but confirm rather than assume when the user doesn't say).
+  The identifier format depends on the provider: `org/repo` for GitHub, a
+  project path for GitLab, `workspace/repo_slug` for Bitbucket,
+  `organization/project/repository` for Azure DevOps.
 - Type of each repo (web / mobile / backend).
 - Production branch of each repo (reasonable default: `main`, but
   confirm — do not assume).
 - Optional: whether any repo uses plain tags instead of Releases
-  (`deploy_source: "tag"`), or a `tag_pattern` different from the global one.
+  (`deploy_source: "tag"`), counts every merge into `prod_branch` as a deploy
+  (`deploy_source: "merge"` — for a branch that auto-deploys and has no
+  release/tag ceremony), or a `tag_pattern` different from the global one.
   Default: inherits the global `tag_pattern`, and `deploy_source: "release"`
-  for github/gitlab — **except Bitbucket, which has no Releases API and
-  always defaults to (and in practice requires) `deploy_source: "tag"`.**
+  for github/gitlab — **except Bitbucket and Azure DevOps, which have no
+  Releases API and default to `deploy_source: "tag"` (`"release"` is rejected
+  there; `"merge"` is fine).**
 - Optional: `api_base` for a self-hosted GitHub Enterprise or GitLab instance,
   if the repo isn't on github.com / gitlab.com. Not supported for Bitbucket
-  (Cloud only).
+  or Azure DevOps (cloud only).
 - Optional: a short note if there is anything non-obvious about the project
   (e.g. multi-repo across different orgs, deploys decoupled between repos,
   repos split across providers) — goes in a `"notes"` field on the project.
@@ -160,6 +177,7 @@ order per provider, automatic:
 | `github` | `GITHUB_TOKEN` env var | `gh auth token` (logged-in GitHub CLI) |
 | `gitlab` | `GITLAB_TOKEN` env var | `glab auth token` (logged-in GitLab CLI) |
 | `bitbucket` | `BITBUCKET_TOKEN` env var (bearer) | `BITBUCKET_USERNAME` + `BITBUCKET_APP_PASSWORD` together (no CLI fallback) |
+| `azure` | `AZURE_DEVOPS_PAT` env var (a PAT with *Code: Read*) | `az account get-access-token` for the Azure DevOps resource (logged-in Azure CLI) |
 
 A run can mix providers: a repo whose provider has no resolvable credential is
 reported as `measured: false` with a `no_credential` problem (same shape as any
@@ -171,8 +189,8 @@ output (and saves it, if `--out-dir` was passed).
 
 Report missing credentials like any other problem — do not ask the user to
 paste a token in the chat if the flow is Cowork; in local Claude Code, suggest
-`gh auth login` / `glab auth login` if they haven't done it (Bitbucket has no
-CLI login to suggest — point at the env vars instead).
+`gh auth login` / `glab auth login` / `az login` if they haven't done it
+(Bitbucket has no CLI login to suggest — point at the env vars instead).
 
 ### Step 4 — Run the script
 
@@ -194,9 +212,9 @@ Available flags:
 - `--branch <branch>`: one-off override of `prod_branch` for this run
   (requires `--project`). Does not modify the config — use only for one-off
   tests against a branch different from the configured one.
-- `--deploy-source {release,tag}`: one-off override of `deploy_source`
+- `--deploy-source {release,tag,merge}`: one-off override of `deploy_source`
   (requires `--project`). Does not modify the config.
-- `--provider {github,gitlab,bitbucket}`: one-off override of `provider`
+- `--provider {github,gitlab,bitbucket,azure}`: one-off override of `provider`
   (requires `--project`). Does not modify the config — applies to every repo
   in that project, so it's only useful for a single-provider project.
 - `--window-days N`: one-off override of the window in days. Does not modify
@@ -210,7 +228,8 @@ from Bash as a reason to discard the output or tell the user the run failed.
 The only case that produces no report at all is a usage error — an unknown
 `--project`, `--branch`/`--deploy-source`/`--provider` passed without
 `--project`, an invalid `deploy_source` or `provider`, `deploy_source:
-"release"` on a bitbucket repo, or `api_base` on a bitbucket repo — which
+"release"` on a bitbucket or azure repo, an azure repo not written as
+`organization/project/repository`, or `api_base` on a bitbucket or azure repo — which
 prints an error to stderr and exits 1 before anything is measured.
 
 `config/projects.json` field reference (also documented in `README.md` for a
@@ -223,13 +242,13 @@ even if only `SKILL.md` itself made it into an install):
 | `window_days` | global | — (required) | Measurement window in days. |
 | `projects[].name` | project | — (required) | Name the project is looked up by (case-insensitive). |
 | `projects[].notes` | project | none | Free text: rationale or clarifications specific to that project. |
-| `repos[].repo` | repo | — (required) | Repo identifier, format depends on `provider`: `org/repo` (github), project path (gitlab), `workspace/repo_slug` (bitbucket). |
-| `repos[].provider` | repo | `"github"` | `"github"`, `"gitlab"`, or `"bitbucket"`. |
+| `repos[].repo` | repo | — (required) | Repo identifier, format depends on `provider`: `org/repo` (github), project path (gitlab), `workspace/repo_slug` (bitbucket), `organization/project/repository` (azure). |
+| `repos[].provider` | repo | `"github"` | `"github"`, `"gitlab"`, `"bitbucket"`, or `"azure"`. |
 | `repos[].type` | repo | `[]` | Informational list (web/mobile/backend), only used for display in the output. |
 | `repos[].prod_branch` | repo | — (required) | Production branch of that repo. |
-| `repos[].deploy_source` | repo | `"release"` (github/gitlab), `"tag"` (bitbucket) | `"release"` = Release with a semver tag (not available on Bitbucket). `"tag"` = plain tag with no Release, for projects that tag but don't publish Releases. |
+| `repos[].deploy_source` | repo | `"release"` (github/gitlab), `"tag"` (bitbucket/azure) | `"release"` = Release with a semver tag (not available on Bitbucket or Azure DevOps). `"tag"` = plain tag with no Release, for projects that tag but don't publish Releases. `"merge"` = every PR/MR merged into `prod_branch` inside the window is one deploy (any provider). |
 | `repos[].tag_pattern` | repo | the global `tag_pattern` | Override if that specific repo uses a different tag format (e.g. with a build number). |
-| `repos[].api_base` | repo | the provider's public API root | Self-hosted GitHub Enterprise or GitLab instance's API root. Not supported for bitbucket (Cloud only). |
+| `repos[].api_base` | repo | the provider's public API root | Self-hosted GitHub Enterprise or GitLab instance's API root. Not supported for bitbucket or azure (cloud only). |
 
 ### Step 5 — Report
 
@@ -345,10 +364,11 @@ missing, it asks.
   (`pr_first_commit_unfetchable`), so teams that delete branches on merge can
   see many exclusions or `no data in the window`.
   Detail: `references/troubleshooting.md`.
-- Bitbucket Server/Data Center and GitHub Enterprise are out of scope beyond
-  the `api_base` override for GitHub Enterprise; Bitbucket is Cloud-only.
-- E2E tests (`tests/e2e/`) currently cover the GitHub path only — GitLab and
-  Bitbucket are covered by unit tests with mocked HTTP responses, not a live
+- Bitbucket Server/Data Center, Azure DevOps Server and GitHub Enterprise are
+  out of scope beyond the `api_base` override for GitHub Enterprise; Bitbucket
+  and Azure DevOps are cloud-only.
+- E2E tests (`tests/e2e/`) currently cover the GitHub path only — GitLab,
+  Bitbucket and Azure DevOps are covered by unit tests with mocked HTTP responses, not a live
   end-to-end run.
 
 ## Important notes
