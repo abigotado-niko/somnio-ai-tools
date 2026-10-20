@@ -449,32 +449,23 @@ bool removeManifestTrackedInstalls({
   var removed = false;
 
   for (final agent in AgentRegistry.installableAgents) {
-    String? legacyDir(InstallScope scope) =>
-        agent.resolvedScopedLegacyInstallPath(
+    // Legacy folders are read even where they are really another agent's
+    // install, unlike `skills remove` and `skills update` (see
+    // AgentInstaller.ownLegacyInstallDir): this removes every agent's somnio
+    // installs anyway, and skipping one could leave a manifest no other
+    // agent reads (`~/.amp -> ~/.cursor`). Which agent wrote a shared
+    // manifest's `rules` entries is unknown, so [_rulesDirsFor] picks the
+    // rules folders, not this agent.
+    final locations = [
+      for (final scope in InstallScope.values)
+        for (final dir in _manifestDirs(
+          agent,
           scope: scope,
           home: home,
           projectRoot: projectRoot,
-        );
-    final locations = [
-      for (final dir in agent.resolvedGlobalInstallPaths(
-        home: home,
-        environment: environment,
-      ))
-        (scope: InstallScope.global, dir: dir),
-      if (legacyDir(InstallScope.global) case final dir?)
-        (scope: InstallScope.global, dir: dir),
-      if (agent.supportsProjectScope) ...[
-        (
-          scope: InstallScope.project,
-          dir: agent.resolvedScopedInstallPath(
-            scope: InstallScope.project,
-            home: home,
-            projectRoot: projectRoot,
-          ),
-        ),
-        if (legacyDir(InstallScope.project) case final dir?)
-          (scope: InstallScope.project, dir: dir),
-      ],
+          environment: environment,
+        ))
+          (scope: scope, dir: dir),
     ];
     // Run from the home directory, the project scope is the global one,
     // or a protected default location (another Claude Code account's
@@ -490,22 +481,25 @@ bool removeManifestTrackedInstalls({
       if (!seen.add(realPathOf(installDir))) continue;
       final manifest = SkillManifest.load(installDir);
       if (manifest.isEmpty) continue;
+      final rulesDirs = _rulesDirsFor(
+        installDir,
+        scope: scope,
+        home: home,
+        projectRoot: projectRoot,
+        environment: environment,
+      );
 
       for (final entry in manifest.entries.toList()) {
         for (final path in entry.paths) {
-          final base = path.root == ManifestRoot.install
-              ? installDir
-              : agent.resolvedScopedExecutionRulesPath(
-                  scope: scope,
-                  home: home,
-                  projectRoot: projectRoot,
-                  environment: environment,
-                );
-          final target = p.join(base, path.path);
-          if (!isSafelyWithin(base, target)) continue;
-          if (_deleteEntity(target)) {
-            onRemoved?.call('  Removed: $target');
-            removed = true;
+          final bases =
+              path.root == ManifestRoot.install ? [installDir] : rulesDirs;
+          for (final base in bases) {
+            final target = p.join(base, path.path);
+            if (!isSafelyWithin(base, target)) continue;
+            if (_deleteEntity(target)) {
+              onRemoved?.call('  Removed: $target');
+              removed = true;
+            }
           }
         }
         manifest.removeEntry(entry.skill);
@@ -518,6 +512,73 @@ bool removeManifestTrackedInstalls({
   }
 
   return removed;
+}
+
+/// Every folder in [scope] where [agent] may have kept a manifest: its
+/// current install folder (and default one, for a relocated global install)
+/// and its legacy one, read as is.
+List<String> _manifestDirs(
+  AgentConfig agent, {
+  required InstallScope scope,
+  required String home,
+  required String projectRoot,
+  required Map<String, String> environment,
+}) =>
+    switch (scope) {
+      InstallScope.global => [
+          ...agent.resolvedGlobalInstallPaths(
+            home: home,
+            environment: environment,
+          ),
+          if (agent.resolvedScopedLegacyInstallPath(
+            scope: InstallScope.global,
+            home: home,
+            projectRoot: projectRoot,
+          )
+              case final dir?)
+            dir,
+        ],
+      InstallScope.project =>
+        agent.resolvedProjectInstallPaths(projectRoot: projectRoot),
+    };
+
+/// The rules folders the `rules` entries of the manifest in [installDir]
+/// resolve against: the somnio-owned rules folder, in [scope], of every
+/// agent that has one and whose manifest folder (see [_manifestDirs]) is
+/// really [installDir].
+///
+/// Through a symlink (`.amp/skills -> .aider/skills`) one manifest holds
+/// entries several agents wrote, so each recorded name is removed from all
+/// of their rules folders. An agent without a rules folder of its own,
+/// current or legacy, never recorded a `rules` entry, so none is resolved
+/// against its install folder, where it could hit a user's skill of the
+/// same name; with no such agent, the entries are skipped.
+List<String> _rulesDirsFor(
+  String installDir, {
+  required InstallScope scope,
+  required String home,
+  required String projectRoot,
+  required Map<String, String> environment,
+}) {
+  final realDir = realPathOf(installDir);
+  return [
+    for (final agent in AgentRegistry.installableAgents)
+      if ((agent.executionRulesPath ?? agent.legacyExecutionRulesPath) !=
+              null &&
+          _manifestDirs(
+            agent,
+            scope: scope,
+            home: home,
+            projectRoot: projectRoot,
+            environment: environment,
+          ).any((dir) => realPathOf(dir) == realDir))
+        agent.resolvedScopedExecutionRulesPath(
+          scope: scope,
+          home: home,
+          projectRoot: projectRoot,
+          environment: environment,
+        ),
+  ];
 }
 
 /// Deletes whatever is at [path], unlinking a symlink rather than following
@@ -596,7 +657,8 @@ bool _removeWorkflowInstall(
   return removed;
 }
 
-/// Removes somnio content from [agent]'s global install directory by name,
+/// Removes somnio content by name from [agent]'s global install directory,
+/// or from its legacy one if it moved (see below),
 /// for installs that predate the `.somnio-skills.json` manifest, plus the
 /// agent's somnio-owned execution rules.
 ///
@@ -614,10 +676,23 @@ bool _removeGenericInstall(
   void Function(String)? onWarning,
 ) {
   var removed = false;
-  for (final location in agent.resolvedGlobalInstallPaths(
-    home: home,
-    environment: environment,
-  )) {
+  // Only folders written before the manifest existed are swept by name: for
+  // an agent that moved, its legacy folder alone, since the new one only
+  // ever held manifest-recorded installs and may hold the user's own files
+  // (e.g. Amazon Q's prompt library). A legacy folder in the workflow
+  // layout is the agent's own config folder (Antigravity's
+  // `~/.gemini/antigravity`); [_removeWorkflowInstall] handles it.
+  final locations = agent.legacyInstallPath == null
+      ? agent.resolvedGlobalInstallPaths(home: home, environment: environment)
+      : [
+          if (agent.legacyInstallFormat != InstallFormat.workflow)
+            agent.resolvedScopedLegacyInstallPath(
+              scope: InstallScope.global,
+              home: home,
+              projectRoot: home,
+            )!,
+        ];
+  for (final location in locations) {
     final dir = Directory(location);
     if (!dir.existsSync() || _hasManifest(location)) continue;
     for (final entity in dir.listSync(followLinks: false)) {

@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 
 import '../agents/agent_config.dart';
 import '../agents/agent_registry.dart';
+import '../installers/agent_installer.dart';
 import '../installers/skills_sh_cleaner.dart';
 import 'platform_utils.dart';
 
@@ -107,12 +108,16 @@ class AgentDetector {
     // Check for a populated install directory (installed but binary not in
     // PATH), current or legacy (e.g. Antigravity's `~/.gemini/antigravity`).
     // An empty one does not count: skills.sh creates `<agent>/skills`
-    // folders for agents the user may never have installed.
+    // folders for agents the user may never have installed. Nor does a
+    // legacy folder that is really another agent's (`~/.amp -> ~/.claude`):
+    // its content shows only that the other agent is in use.
     if (agent.installScope == InstallScope.global) {
-      final legacyDir = agent.resolvedScopedLegacyInstallPath(
+      final legacyDir = AgentInstaller.ownLegacyInstallDir(
+        agent,
         scope: InstallScope.global,
         home: _home,
         projectRoot: _home,
+        environment: _environment,
       );
       final installDirs = [
         agent.resolvedInstallPath(home: _home, environment: _environment),

@@ -199,6 +199,36 @@ void main() {
         });
       });
 
+      group('Amp', () {
+        final amp = AgentRegistry.findById('amp')!;
+
+        Future<AgentInfo> detectAmp() async {
+          final detector = AgentDetector(
+            homeDirectory: home,
+            whichBinary: (_) async => null,
+          );
+          return (await detector.detect())[amp]!;
+        }
+
+        test('is not detected through a legacy folder linked to Claude\'s',
+            () async {
+          Directory(p.join(home, '.claude', 'skills', 'mine'))
+              .createSync(recursive: true);
+          Link(p.join(home, '.amp')).createSync(p.join(home, '.claude'));
+
+          expect((await detectAmp()).installed, isFalse);
+        });
+
+        test('is still detected through a legacy folder in dotfiles', () async {
+          final dotfiles = p.join(home, 'dotfiles', 'amp');
+          Directory(p.join(dotfiles, 'skills', 'mine'))
+              .createSync(recursive: true);
+          Link(p.join(home, '.amp')).createSync(dotfiles);
+
+          expect((await detectAmp()).path, p.join(home, '.amp', 'skills'));
+        });
+      });
+
       test('detects an agent whose binary is on PATH', () async {
         final detector = AgentDetector(
           homeDirectory: home,

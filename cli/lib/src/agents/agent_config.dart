@@ -24,7 +24,7 @@ enum InstallFormat {
   /// Workflow file + separate somnio_rules/ directory (Antigravity).
   workflow,
 
-  /// Generic single markdown file per skill (Copilot, Windsurf, etc.).
+  /// Generic single markdown file per skill (Roo, Kilo, Amazon Q, etc.).
   markdown,
 }
 
@@ -61,6 +61,8 @@ class AgentConfig {
     this.installFormat = InstallFormat.markdown,
     this.installScope = InstallScope.global,
     required this.installPath,
+    this.projectInstallPath,
+    this.globalOnly = false,
     this.ruleExtension = '.md',
     this.executionRulesPath,
     this.configHome,
@@ -153,6 +155,17 @@ class AgentConfig {
   /// Install path template. Supports `{home}` and `{name}` placeholders.
   /// e.g., `{home}/.claude/skills/{name}/`
   final String installPath;
+
+  /// Install path template for [InstallScope.project], when the agent's
+  /// project layout is not [installPath] re-anchored at the project root
+  /// (e.g. Copilot reads `~/.copilot/skills` but `<project>/.github/skills`).
+  ///
+  /// `{home}` stands for the project root. Null means [installPath].
+  final String? projectInstallPath;
+
+  /// Whether the agent has no per-project install location at all, so
+  /// project-scope installs fall back to the global one.
+  final bool globalOnly;
 
   /// File extension for rule files (e.g., '.md', '.yaml').
   final String ruleExtension;
@@ -379,6 +392,26 @@ class AgentConfig {
     return _resolve(template, home: home, environment: environment);
   }
 
+  /// Every directory a project install may live in under [projectRoot]: the
+  /// current project location when [supportsProjectScope], then
+  /// [legacyInstallPath] re-anchored at [projectRoot] — even for an agent
+  /// that has no project location anymore, so an old one stays removable.
+  List<String> resolvedProjectInstallPaths({required String projectRoot}) => {
+        if (supportsProjectScope)
+          resolvedScopedInstallPath(
+            scope: InstallScope.project,
+            home: projectRoot,
+            projectRoot: projectRoot,
+          ),
+        if (resolvedScopedLegacyInstallPath(
+          scope: InstallScope.project,
+          home: projectRoot,
+          projectRoot: projectRoot,
+        )
+            case final legacy?)
+          legacy,
+      }.toList();
+
   /// Resolves [legacyInstallPath] for [scope], anchoring `{home}` like
   /// [resolvedScopedInstallPath]. Null when the agent never moved.
   ///
@@ -425,12 +458,15 @@ class AgentConfig {
   /// Whether this agent has a meaningful per-project install location.
   ///
   /// Project scope works by re-anchoring the `{home}` placeholder at the
-  /// project root, so it only makes sense for agents whose install path is
-  /// home-relative (`{home}/.claude/skills` -> `<project>/.claude/skills`).
-  bool get supportsProjectScope => installPath.startsWith('{home}');
+  /// project root, so it only makes sense for agents whose install path (or
+  /// [projectInstallPath]) is home-relative (`{home}/.claude/skills` ->
+  /// `<project>/.claude/skills`) and that are not [globalOnly].
+  bool get supportsProjectScope =>
+      !globalOnly && (projectInstallPath ?? installPath).startsWith('{home}');
 
   /// Resolves the install path for [scope], anchoring at [home] for
-  /// [InstallScope.global] and at [projectRoot] for [InstallScope.project].
+  /// [InstallScope.global] and at [projectRoot] for [InstallScope.project]
+  /// (through [projectInstallPath] when set).
   ///
   /// [environment] only applies to the global scope; see
   /// [configHomeVariable].
@@ -441,11 +477,18 @@ class AgentConfig {
     String? name,
     Map<String, String> environment = const {},
   }) {
-    final global = scope == InstallScope.global;
-    return resolvedInstallPath(
-      home: global ? home : projectRoot,
+    if (scope == InstallScope.global) {
+      return resolvedInstallPath(
+        home: home,
+        name: name,
+        environment: environment,
+      );
+    }
+    return _resolve(
+      projectInstallPath ?? installPath,
+      home: projectRoot,
       name: name,
-      environment: global ? environment : const {},
+      environment: const {},
     );
   }
 

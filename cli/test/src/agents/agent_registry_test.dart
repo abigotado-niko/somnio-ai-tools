@@ -252,6 +252,105 @@ void main() {
       }
     });
 
+    test('agents moved to the folder they read record the old one', () {
+      // Each was installed to a folder the agent never reads; the old folder
+      // stays recorded so update migrates it and remove/uninstall clean it.
+      // A null project path means project installs go global.
+      const expected =
+          <String, ({String global, String? project, String legacy})>{
+        'windsurf': (
+          global: '/h/.codeium/windsurf/skills',
+          project: '/p/.windsurf/skills',
+          legacy: '/h/.windsurf/workflows',
+        ),
+        'amp': (
+          global: '/h/.config/amp/skills',
+          project: null,
+          legacy: '/h/.amp/skills',
+        ),
+        'copilot': (
+          global: '/h/.copilot/skills',
+          project: '/p/.github/skills',
+          legacy: '/h/.copilot/agents',
+        ),
+      };
+      for (final MapEntry(key: id, value: paths) in expected.entries) {
+        final agent = AgentRegistry.findById(id)!;
+        expect(agent.installFormat, InstallFormat.skillDir, reason: id);
+        expect(agent.legacyInstallFormat, InstallFormat.markdown, reason: id);
+        expect(agent.executionRulesPath, isNull, reason: id);
+        expect(agent.resolvedInstallPath(home: '/h'), paths.global, reason: id);
+        expect(
+          agent.supportsProjectScope,
+          paths.project != null,
+          reason: id,
+        );
+        if (paths.project case final project?) {
+          expect(
+            agent.resolvedScopedInstallPath(
+              scope: InstallScope.project,
+              home: '/h',
+              projectRoot: '/p',
+            ),
+            project,
+            reason: id,
+          );
+        }
+        expect(
+          agent.resolvedScopedLegacyInstallPath(
+            scope: InstallScope.global,
+            home: '/h',
+            projectRoot: '/p',
+          ),
+          paths.legacy,
+          reason: id,
+        );
+      }
+      expect(
+        AgentRegistry.findById('amp')!.resolvedExecutionRulesPath(home: '/h'),
+        '/h/.amp/somnio_rules',
+      );
+    });
+
+    test('amazonq installs prompts where the Q CLI reads them', () {
+      final amazonq = AgentRegistry.findById('amazonq')!;
+      expect(amazonq.installFormat, InstallFormat.markdown);
+      expect(
+        amazonq.resolvedInstallPath(home: '/h'),
+        '/h/.aws/amazonq/prompts',
+      );
+      // The project folder did not move, so it is its own legacy folder.
+      expect(
+        amazonq.resolvedProjectInstallPaths(projectRoot: '/p'),
+        ['/p/.amazonq/prompts'],
+      );
+      expect(
+        amazonq.resolvedScopedLegacyInstallPath(
+          scope: InstallScope.global,
+          home: '/h',
+          projectRoot: '/p',
+        ),
+        '/h/.amazonq/prompts',
+      );
+    });
+
+    test('no agent installs into the skills.sh store at global scope', () {
+      for (final agent in AgentRegistry.agents) {
+        for (final dir in [
+          ...agent.resolvedGlobalInstallPaths(home: '/h'),
+          if (agent.resolvedScopedLegacyInstallPath(
+            scope: InstallScope.global,
+            home: '/h',
+            projectRoot: '/p',
+          )
+              case final legacy?)
+            legacy,
+        ]) {
+          expect(dir, isNot('/h/.agents/skills'), reason: agent.id);
+        }
+      }
+    });
+
     test('all CLI agents with yolo-style auto-approve', () {
       // Agents that have auto-approve/yolo flags
       final expectations = {

@@ -15,9 +15,10 @@ void main() {
   final home = PlatformUtils.homeDirectory;
   final claude = AgentRegistry.findById('claude')!;
   final cursor = AgentRegistry.findById('cursor')!;
-  final amp = AgentRegistry.findById('amp')!; // default + executionRulesPath
+  final aider =
+      AgentRegistry.findById('aider')!; // default + executionRulesPath
   final codex = AgentRegistry.findById('codex')!; // skillDir + CODEX_HOME
-  final copilot = AgentRegistry.findById('copilot')!; // no executionRulesPath
+  final roo = AgentRegistry.findById('roo')!; // no executionRulesPath
   final antigravity = AgentRegistry.findById('antigravity')!; // binary == null
   const yamlAgent = AgentConfig(
     id: 'yaml-agent',
@@ -47,10 +48,10 @@ void main() {
     });
 
     test('default with executionRulesPath uses planSubDir layout', () {
-      final path = resolver.ruleBasePath(amp, 'flutter-health', 'flutter');
+      final path = resolver.ruleBasePath(aider, 'flutter-health', 'flutter');
       expect(
         path,
-        p.join(home, '.amp', 'somnio_rules', 'flutter', 'references'),
+        p.join(home, '.aider', 'somnio_rules', 'flutter', 'references'),
       );
     });
 
@@ -83,8 +84,8 @@ void main() {
     });
 
     test('default without executionRulesPath returns resolved base path', () {
-      final path = resolver.ruleBasePath(copilot, 'flutter-health', 'flutter');
-      final base = copilot.resolvedExecutionRulesPath(
+      final path = resolver.ruleBasePath(roo, 'flutter-health', 'flutter');
+      final base = roo.resolvedExecutionRulesPath(
         home: home,
         name: 'flutter-health',
       );
@@ -116,10 +117,10 @@ void main() {
 
     test('default with executionRulesPath uses planSubDir layout', () {
       final path =
-          resolver.templatePath(amp, 'flutter-health', 'flutter', 't.md');
+          resolver.templatePath(aider, 'flutter-health', 'flutter', 't.md');
       expect(
         path,
-        p.join(home, '.amp', 'somnio_rules', 'flutter', 'assets', 't.md'),
+        p.join(home, '.aider', 'somnio_rules', 'flutter', 'assets', 't.md'),
       );
     });
 
@@ -134,8 +135,8 @@ void main() {
 
     test('default without executionRulesPath uses base/assets/{file}', () {
       final path =
-          resolver.templatePath(copilot, 'flutter-health', 'flutter', 't.md');
-      final base = copilot.resolvedExecutionRulesPath(
+          resolver.templatePath(roo, 'flutter-health', 'flutter', 't.md');
+      final base = roo.resolvedExecutionRulesPath(
         home: home,
         name: 'flutter-health',
       );

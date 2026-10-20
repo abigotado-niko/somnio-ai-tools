@@ -5,6 +5,19 @@ All notable changes to the Somnio CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.17] - 2026-10-19
+
+### Fixed
+
+- **Windsurf, Amp, GitHub Copilot and Amazon Q got skills in folders they never read.** The CLI now installs into the folder each agent documents:
+  - **Windsurf:** `~/.codeium/windsurf/skills/<name>/SKILL.md` (project: `.windsurf/skills/`), instead of flat files in `~/.windsurf/workflows`. They are skills rather than global workflows, which Windsurf caps at 12,000 characters.
+  - **Amp:** `~/.config/amp/skills/<name>/SKILL.md`, instead of flat files in `~/.amp/skills` plus `~/.amp/somnio_rules/`. The shared `~/.config/agents/skills` and `~/.agents/skills` are left to skills.sh and the other agents that read them. Both project folders Amp reads (`.agents/skills`, `.claude/skills`) are shared too, so a project install now goes global.
+  - **GitHub Copilot:** `~/.copilot/skills/<name>/SKILL.md` (project: `.github/skills/`), instead of `~/.copilot/agents/<name>.md`, which Copilot loads as custom agents and which lacked their required `description` frontmatter.
+  - **Amazon Q:** global prompts go to `~/.aws/amazonq/prompts` instead of `~/.amazonq/prompts`. Project prompts stay in `.amazonq/prompts`, which the Q CLI reads.
+- **The old folders are migrated and cleaned**, through the `legacyInstallPath` added for Antigravity in 3.2.15. `somnio skills update` moves the skills recorded there to the new folders, and warns about Amp skills left in a project's `.amp/skills`. `skills remove` deletes what the old folders' manifests record, in both scopes. `uninstall --skills` also deletes Somnio-named files there that predate the manifest. New `AgentConfig.projectInstallPath` and `globalOnly` describe agents whose project folder is not their global one re-anchored at the project root, or that have none.
+- **`uninstall --skills` no longer sweeps the new folder of an agent that moved, by name.** No release wrote there before the manifest existed, so only manifest-recorded installs are removed from it. User-written prompts in Amazon Q's library, and user skills in `~/.gemini/config/skills` or `~/.copilot/skills` that share a Somnio name or prefix, are kept.
+- **Migration, removal and agent detection skip a legacy folder that is really another agent's install.** When the old folder's real path, or its old rules folder's (`~/.amp/somnio_rules`), equals, holds or lies inside another agent's current skills or rules folder (global, or in the current project) or the agent's own global one, through a symlink either way (`~/.amp -> ~/.claude`, `~/.claude -> ~/.amp`, a project's `.amp -> ~/.config/amp`), its manifest is that install's: `skills remove --agent amp` would otherwise list and delete Claude Code's skills as Amp's. `skills update` no longer warns about such a folder in a project either. `uninstall --skills` still reads every legacy folder, since it removes every agent's Somnio skills anyway, and resolves the `rules` entries of a manifest shared that way against the rules folder of every agent that may have written them: with a project's `.amp/skills -> .aider/skills`, Aider's `.aider/somnio_rules/<skill>` was otherwise left behind. Entries no agent with a rules folder could have written are skipped rather than resolved against a skills folder. Agent detection does not count Amp as installed just because `~/.amp -> ~/.claude` holds Claude Code's skills. A legacy folder linked anywhere else, such as a dotfiles repo (`~/.amazonq -> ~/dotfiles/amazonq`), is still migrated and removed. Amazon Q's project `.amazonq/prompts`, its current folder as well as its old one, is always read.
+
 ## [3.2.16] - 2026-10-19
 
 ### Added

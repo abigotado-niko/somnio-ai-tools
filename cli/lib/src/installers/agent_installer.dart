@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../agents/agent_config.dart';
+import '../agents/agent_registry.dart';
 import '../agents/installed_skill_names.dart';
 import '../content/skill_bundle.dart';
 import '../content/workflow_skill.dart';
@@ -75,14 +76,140 @@ class AgentInstaller extends Installer {
   /// Resolves [AgentConfig.legacyInstallPath] for [scope], or null when the
   /// agent never moved (or it resolves to [_installDir] itself).
   String? get _legacyInstallDir {
-    final legacy = agentConfig.resolvedScopedLegacyInstallPath(
+    final legacy = ownLegacyInstallDir(
+      agentConfig,
       scope: scope,
       home: _home,
       projectRoot: projectRoot,
+      environment: environment,
     );
     if (legacy == null || p.equals(legacy, _installDir)) return null;
     return legacy;
   }
+
+  /// Resolves [agent]'s [AgentConfig.legacyInstallPath] for [scope], or null
+  /// when there is none or it may not be somnio's to migrate.
+  ///
+  /// The legacy folder, and the legacy rules folder its manifest's `rules`
+  /// entries resolve against (Amp's `~/.amp/somnio_rules`), must not really
+  /// be — equal, hold, or lie inside — a current folder: another installable
+  /// agent's install or rules folder in either scope, or [agent]'s own
+  /// global install folder (and its project one, in project scope). Through
+  /// a symlink either way (`~/.amp -> ~/.claude`, `~/.claude -> ~/.amp`),
+  /// that folder's manifest is the other install's, and migrating or
+  /// removing it as [agent]'s legacy install would delete those skills. A
+  /// symlink to anywhere else (a dotfiles folder) is still [agent]'s own.
+  ///
+  /// Project folders are those under [projectRoot] only, and are not
+  /// checked when [projectRoot] is itself inside a legacy folder, where
+  /// every one of them would be.
+  static String? ownLegacyInstallDir(
+    AgentConfig agent, {
+    required InstallScope scope,
+    required String home,
+    required String projectRoot,
+    Map<String, String> environment = const {},
+  }) {
+    final legacy = agent.resolvedScopedLegacyInstallPath(
+      scope: scope,
+      home: home,
+      projectRoot: projectRoot,
+    );
+    if (legacy == null) return null;
+    final legacyDirs = [
+      legacy,
+      if (agent.executionRulesPath == null &&
+          agent.legacyExecutionRulesPath != null)
+        agent.resolvedScopedExecutionRulesPath(
+          scope: scope,
+          home: home,
+          projectRoot: projectRoot,
+        ),
+    ].map(realPathOf).toList();
+    final realProject = realPathOf(projectRoot);
+    final checkProject = !legacyDirs.any(
+      (dir) => p.equals(dir, realProject) || p.isWithin(dir, realProject),
+    );
+
+    final currentDirs = [
+      for (final other in AgentRegistry.installableAgents)
+        if (other.id != agent.id) ...[
+          ...other.resolvedGlobalInstallPaths(
+            home: home,
+            environment: environment,
+          ),
+          other.resolvedScopedExecutionRulesPath(
+            scope: InstallScope.global,
+            home: home,
+            projectRoot: projectRoot,
+            environment: environment,
+          ),
+          if (checkProject && other.supportsProjectScope) ...[
+            other.resolvedScopedInstallPath(
+              scope: InstallScope.project,
+              home: home,
+              projectRoot: projectRoot,
+            ),
+            other.resolvedScopedExecutionRulesPath(
+              scope: InstallScope.project,
+              home: home,
+              projectRoot: projectRoot,
+            ),
+          ],
+        ],
+      ...agent.resolvedGlobalInstallPaths(
+        home: home,
+        environment: environment,
+      ),
+      if (scope == InstallScope.project &&
+          checkProject &&
+          agent.supportsProjectScope)
+        agent.resolvedScopedInstallPath(
+          scope: InstallScope.project,
+          home: home,
+          projectRoot: projectRoot,
+        ),
+    ].map(realPathOf);
+    final overlaps = currentDirs.any(
+      (dir) => legacyDirs.any(
+        (legacyDir) =>
+            p.equals(dir, legacyDir) ||
+            p.isWithin(dir, legacyDir) ||
+            p.isWithin(legacyDir, dir),
+      ),
+    );
+    return overlaps ? null : legacy;
+  }
+
+  /// [AgentConfig.resolvedProjectInstallPaths] for [agent] under
+  /// [projectRoot], without a legacy folder [ownLegacyInstallDir] rejects.
+  ///
+  /// The current project folder is always kept, even where it is the legacy
+  /// one too (Amazon Q's `.amazonq/prompts`). [home] and [environment]
+  /// locate the other agents' global folders the legacy one must not be.
+  static List<String> ownProjectInstallDirs(
+    AgentConfig agent, {
+    required String home,
+    required String projectRoot,
+    Map<String, String> environment = const {},
+  }) =>
+      {
+        if (agent.supportsProjectScope)
+          agent.resolvedScopedInstallPath(
+            scope: InstallScope.project,
+            home: projectRoot,
+            projectRoot: projectRoot,
+          ),
+        if (ownLegacyInstallDir(
+          agent,
+          scope: InstallScope.project,
+          home: home,
+          projectRoot: projectRoot,
+          environment: environment,
+        )
+            case final legacy?)
+          legacy,
+      }.toList();
 
   /// The manifest an earlier release kept at [_legacyInstallDir], when there
   /// is one and this installer records manifests (so it may migrate).

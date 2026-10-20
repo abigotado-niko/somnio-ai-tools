@@ -270,19 +270,28 @@ void main() {
       expect(File(p.join(workflows, 'deploy.md')).existsSync(), isTrue);
     });
 
-    test('removes Antigravity skill directories from ~/.gemini/config/skills',
-        () {
-      final skills = p.join(home.path, '.gemini', 'config', 'skills');
-      _writeSkill(skills, 'flutter-health-audit');
-      _writeSkill(skills, 'my-own-skill');
+    test('does not sweep the folder a moved agent installs to now', () {
+      // No release wrote there before the manifest existed, so anything
+      // unrecorded there is the user's; recorded installs are removed by
+      // removeManifestTrackedInstalls.
+      final antigravity = p.join(home.path, '.gemini', 'config', 'skills');
+      _writeSkill(antigravity, 'flutter-health-audit');
+      final copilot = p.join(home.path, '.copilot', 'skills');
+      _writeSkill(copilot, 'somnio-standup');
+      final prompts = p.join(home.path, '.aws', 'amazonq', 'prompts');
+      _writeFile(p.join(prompts, 'somnio-standup.md'), 'MINE');
+      _writeFile(p.join(prompts, 'git_commit_format.md'), 'MINE');
 
       removeAgentInstalls(home: home.path, environment: const {});
 
       expect(
-        Directory(p.join(skills, 'flutter-health-audit')).existsSync(),
-        isFalse,
+        Directory(p.join(antigravity, 'flutter-health-audit')).existsSync(),
+        isTrue,
       );
-      expect(Directory(p.join(skills, 'my-own-skill')).existsSync(), isTrue);
+      expect(Directory(p.join(copilot, 'somnio-standup')).existsSync(), isTrue);
+      expect(File(p.join(prompts, 'somnio-standup.md')).existsSync(), isTrue);
+      expect(
+          File(p.join(prompts, 'git_commit_format.md')).existsSync(), isTrue);
     });
 
     test('removes Gemini skills and its execution rules', () {
@@ -368,6 +377,33 @@ void main() {
         isFalse,
       );
     });
+
+    test('removes pre-manifest installs from folders agents never read', () {
+      final legacy = {
+        'windsurf': p.join(home.path, '.windsurf', 'workflows'),
+        'amp': p.join(home.path, '.amp', 'skills'),
+        'copilot': p.join(home.path, '.copilot', 'agents'),
+        'amazonq': p.join(home.path, '.amazonq', 'prompts'),
+      };
+      for (final dir in legacy.values) {
+        _writeFile(p.join(dir, 'security_audit.md'));
+        _writeFile(p.join(dir, 'notes.md'), 'THEIRS');
+      }
+      final ampRules = p.join(home.path, '.amp', 'somnio_rules');
+      _writeFile(p.join(ampRules, 'security-audit', 'references', 'r.md'));
+
+      removeAgentInstalls(home: home.path, environment: const {});
+
+      for (final MapEntry(key: id, value: dir) in legacy.entries) {
+        expect(
+          File(p.join(dir, 'security_audit.md')).existsSync(),
+          isFalse,
+          reason: id,
+        );
+        expect(File(p.join(dir, 'notes.md')).existsSync(), isTrue, reason: id);
+      }
+      expect(Directory(ampRules).existsSync(), isFalse);
+    });
   });
 
   group('removeManifestTrackedInstalls', () {
@@ -427,6 +463,273 @@ void main() {
           isFalse,
         );
       });
+    });
+
+    test('removes what a legacy folder behind a dotfiles link records', () {
+      final dotfiles = p.join(project.path, 'dotfiles', 'amp');
+      final skills = p.join(dotfiles, 'skills');
+      final rules = p.join(dotfiles, 'somnio_rules');
+      _writeFile(p.join(skills, 'security-audit.md'));
+      _writeFile(p.join(rules, 'security-audit', 'references', 'r.md'));
+      SkillManifest.load(skills)
+        ..record(
+          skill: 'security-audit',
+          kind: 'audit',
+          paths: const [
+            ManifestPath(ManifestRoot.install, 'security-audit.md'),
+            ManifestPath(ManifestRoot.rules, 'security-audit'),
+          ],
+        )
+        ..save();
+      Link(p.join(home.path, '.amp')).createSync(dotfiles);
+
+      removeManifestTrackedInstalls(home: home.path, projectRoot: project.path);
+
+      expect(File(p.join(skills, 'security-audit.md')).existsSync(), isFalse);
+      expect(Directory(p.join(rules, 'security-audit')).existsSync(), isFalse);
+      expect(
+        File(p.join(skills, SkillManifest.fileName)).existsSync(),
+        isFalse,
+      );
+    });
+
+    group('a manifest shared through a link to another agent\'s folder', () {
+      /// Records [skill] in the manifest at [skills] with an install and a
+      /// rules entry, and writes the install file plus its rules folder in
+      /// each of [rulesDirs].
+      void seedShared(
+        String skills,
+        String skill, {
+        required List<String> rulesDirs,
+      }) {
+        _writeFile(p.join(skills, 'somnio_$skill.md'));
+        for (final rules in rulesDirs) {
+          _writeFile(p.join(rules, skill, 'references', 'r.md'));
+        }
+        SkillManifest.load(skills)
+          ..record(
+            skill: skill,
+            kind: 'audit',
+            paths: [
+              ManifestPath(ManifestRoot.install, 'somnio_$skill.md'),
+              ManifestPath(ManifestRoot.rules, skill),
+            ],
+          )
+          ..save();
+      }
+
+      /// Expects the install file, every rules folder and the manifest of
+      /// [seedShared] gone.
+      void expectSharedGone(
+        String skills,
+        String skill, {
+        required List<String> rulesDirs,
+      }) {
+        expect(File(p.join(skills, 'somnio_$skill.md')).existsSync(), isFalse);
+        for (final rules in rulesDirs) {
+          expect(
+            Directory(p.join(rules, skill)).existsSync(),
+            isFalse,
+            reason: rules,
+          );
+        }
+        expect(
+          File(p.join(skills, SkillManifest.fileName)).existsSync(),
+          isFalse,
+        );
+      }
+
+      test('clears the rules of both agents (.amp/skills -> .aider/skills)',
+          () {
+        // Amp comes first in the registry and reads Aider's manifest: its
+        // rules entry may be Amp's or Aider's, so both folders are cleared.
+        final skills = p.join(project.path, '.aider', 'skills');
+        final rulesDirs = [
+          p.join(project.path, '.aider', 'somnio_rules'),
+          p.join(project.path, '.amp', 'somnio_rules'),
+        ];
+        seedShared(skills, 'security-audit', rulesDirs: rulesDirs);
+        Link(p.join(project.path, '.amp', 'skills')).createSync(skills);
+
+        removeManifestTrackedInstalls(
+          home: home.path,
+          projectRoot: project.path,
+        );
+
+        expectSharedGone(skills, 'security-audit', rulesDirs: rulesDirs);
+      });
+
+      test('clears the rules of both agents (~/.amp/skills -> ~/.aider/skills)',
+          () {
+        final skills = p.join(home.path, '.aider', 'skills');
+        final rulesDirs = [
+          p.join(home.path, '.aider', 'somnio_rules'),
+          p.join(home.path, '.amp', 'somnio_rules'),
+        ];
+        seedShared(skills, 'security-audit', rulesDirs: rulesDirs);
+        Link(p.join(home.path, '.amp', 'skills')).createSync(skills);
+
+        removeManifestTrackedInstalls(
+          home: home.path,
+          projectRoot: project.path,
+        );
+
+        expectSharedGone(skills, 'security-audit', rulesDirs: rulesDirs);
+      });
+
+      test('clears a manifest no current folder holds (~/.amp -> ~/.cursor)',
+          () {
+        // Amp's old `skills` lands in no agent's install folder, while its
+        // old rules folder is Cursor's: still Amp's manifest to read.
+        final skills = p.join(home.path, '.cursor', 'skills');
+        final rulesDirs = [p.join(home.path, '.cursor', 'somnio_rules')];
+        seedShared(skills, 'security-audit', rulesDirs: rulesDirs);
+        Link(p.join(home.path, '.amp'))
+            .createSync(p.join(home.path, '.cursor'));
+
+        removeManifestTrackedInstalls(
+          home: home.path,
+          projectRoot: project.path,
+        );
+
+        expectSharedGone(skills, 'security-audit', rulesDirs: rulesDirs);
+      });
+
+      test('clears a legacy folder holding another agent\'s', () {
+        // `.windsurf/workflows -> .github` holds Copilot's `.github/skills`.
+        final github = p.join(project.path, '.github');
+        _writeFile(p.join(github, 'somnio_security_audit.md'));
+        SkillManifest.load(github)
+          ..record(
+            skill: 'security-audit',
+            kind: 'audit',
+            paths: const [
+              ManifestPath(ManifestRoot.install, 'somnio_security_audit.md'),
+            ],
+          )
+          ..save();
+        Directory(p.join(project.path, '.windsurf')).createSync();
+        Link(p.join(project.path, '.windsurf', 'workflows')).createSync(github);
+
+        removeManifestTrackedInstalls(
+          home: home.path,
+          projectRoot: project.path,
+        );
+
+        expect(
+          File(p.join(github, 'somnio_security_audit.md')).existsSync(),
+          isFalse,
+        );
+        expect(
+          File(p.join(github, SkillManifest.fileName)).existsSync(),
+          isFalse,
+        );
+      });
+
+      test(
+          'resolves rules entries in the agent\'s rules folder, never in an '
+          'install folder (~/.amp/skills -> ~/.copilot/skills)', () {
+        // Copilot has no rules folder: Amp's entry is only Amp's to resolve.
+        final skills = p.join(home.path, '.copilot', 'skills');
+        final rulesDirs = [p.join(home.path, '.amp', 'somnio_rules')];
+        seedShared(skills, 'security-audit', rulesDirs: rulesDirs);
+        _writeSkill(skills, 'security-audit');
+        Link(p.join(home.path, '.amp', 'skills')).createSync(skills);
+
+        removeManifestTrackedInstalls(
+          home: home.path,
+          projectRoot: project.path,
+        );
+
+        expectSharedGone(skills, 'security-audit', rulesDirs: rulesDirs);
+        expect(
+          File(p.join(skills, 'security-audit', 'SKILL.md')).existsSync(),
+          isTrue,
+        );
+      });
+
+      test(
+          'keeps the unrecorded skills of a shared folder (~/.amp -> ~/.claude)',
+          () {
+        seedClaudeSkill(home.path, 'security-audit');
+        final claudeSkills = p.join(home.path, '.claude', 'skills');
+        _writeSkill(claudeSkills, 'flutter-health-audit');
+        Link(p.join(home.path, '.amp'))
+            .createSync(p.join(home.path, '.claude'));
+
+        // In the command's order: the name sweep skips the folder, since it
+        // has a manifest, then the manifests.
+        removeAgentInstalls(home: home.path, environment: const {});
+        removeManifestTrackedInstalls(
+          home: home.path,
+          projectRoot: project.path,
+        );
+
+        expect(
+          Directory(p.join(claudeSkills, 'security-audit')).existsSync(),
+          isFalse,
+        );
+        expect(
+          File(p.join(claudeSkills, SkillManifest.fileName)).existsSync(),
+          isFalse,
+        );
+        expect(
+          Directory(p.join(claudeSkills, 'flutter-health-audit')).existsSync(),
+          isTrue,
+        );
+      });
+    });
+
+    test('skips rules entries no agent with a rules folder could have written',
+        () {
+      // Agents without one (Copilot here) never recorded `rules` entries;
+      // a hand-edited one must not resolve against the install folder.
+      final skills = p.join(home.path, '.copilot', 'skills');
+      _writeSkill(skills, 'security-audit');
+      SkillManifest.load(skills)
+        ..record(
+          skill: 'security-audit',
+          kind: 'audit',
+          paths: const [ManifestPath(ManifestRoot.rules, 'security-audit')],
+        )
+        ..save();
+
+      removeManifestTrackedInstalls(home: home.path, projectRoot: project.path);
+
+      expect(
+        File(p.join(skills, 'security-audit', 'SKILL.md')).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(p.join(skills, SkillManifest.fileName)).existsSync(),
+        isFalse,
+      );
+    });
+
+    test('removes a project Amazon Q install from .amazonq/prompts', () {
+      // Its current project folder and its legacy one at once.
+      final prompts = p.join(project.path, '.amazonq', 'prompts');
+      _writeFile(p.join(prompts, 'somnio_security_audit.md'));
+      SkillManifest.load(prompts)
+        ..record(
+          skill: 'security-audit',
+          kind: 'audit',
+          paths: const [
+            ManifestPath(ManifestRoot.install, 'somnio_security_audit.md'),
+          ],
+        )
+        ..save();
+
+      removeManifestTrackedInstalls(home: home.path, projectRoot: project.path);
+
+      expect(
+        File(p.join(prompts, 'somnio_security_audit.md')).existsSync(),
+        isFalse,
+      );
+      expect(
+        File(p.join(prompts, SkillManifest.fileName)).existsSync(),
+        isFalse,
+      );
     });
 
     group('a Codex manifest written before 3.2.12', () {
@@ -776,6 +1079,81 @@ void main() {
         ).existsSync(),
         isFalse,
       );
+    });
+
+    test('removes an Amp manifest left in ~/.amp before 3.2.17', () {
+      final oldSkills = p.join(home.path, '.amp', 'skills');
+      final oldRules = p.join(home.path, '.amp', 'somnio_rules');
+      _writeFile(p.join(oldSkills, 'security_audit.md'));
+      _writeFile(p.join(oldRules, 'security-audit', 'references', 'r.md'));
+      SkillManifest.load(oldSkills)
+        ..record(
+          skill: 'security-audit',
+          kind: 'audit',
+          paths: const [
+            ManifestPath(ManifestRoot.install, 'security_audit.md'),
+            ManifestPath(ManifestRoot.rules, 'security-audit'),
+          ],
+        )
+        ..save();
+
+      final removed = removeManifestTrackedInstalls(
+        home: home.path,
+        projectRoot: project.path,
+      );
+
+      expect(removed, isTrue);
+      expect(
+        File(p.join(oldSkills, 'security_audit.md')).existsSync(),
+        isFalse,
+      );
+      expect(
+        Directory(p.join(oldRules, 'security-audit')).existsSync(),
+        isFalse,
+      );
+      expect(
+        File(p.join(oldSkills, SkillManifest.fileName)).existsSync(),
+        isFalse,
+      );
+    });
+
+    test('removes project installs from legacy folders', () {
+      // Amp has no project location anymore; Windsurf and Copilot moved.
+      for (final relative in [
+        '.amp/skills',
+        '.windsurf/workflows',
+        '.copilot/agents',
+      ]) {
+        final dir = p.join(project.path, relative);
+        _writeFile(p.join(dir, 'security_audit.md'));
+        SkillManifest.load(dir)
+          ..record(
+            skill: 'security-audit',
+            kind: 'audit',
+            paths: const [
+              ManifestPath(ManifestRoot.install, 'security_audit.md'),
+            ],
+          )
+          ..save();
+      }
+
+      removeManifestTrackedInstalls(
+        home: home.path,
+        projectRoot: project.path,
+      );
+
+      for (final relative in [
+        '.amp/skills',
+        '.windsurf/workflows',
+        '.copilot/agents',
+      ]) {
+        expect(
+          File(p.join(project.path, relative, 'security_audit.md'))
+              .existsSync(),
+          isFalse,
+          reason: relative,
+        );
+      }
     });
 
     test('returns false when nothing is recorded anywhere', () {
