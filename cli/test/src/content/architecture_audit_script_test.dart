@@ -3,9 +3,12 @@
 // every target but no script directory. Steps 1 and 2 cut the script out by
 // those markers, and the script refuses to run when its own digest does not
 // match SELF_DIGEST. These tests keep the markers, the fence and the digest
-// line in the shape the extraction command expects.
+// line in the shape the extraction command expects, and the digest in step
+// with the script.
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -57,6 +60,26 @@ void main() {
           .allMatches(body),
       hasLength(1),
     );
+  });
+
+  test('SELF_DIGEST matches the script the extraction yields', () {
+    // Extracts as module-map.md does and hashes as self_digest() does: an
+    // edit that keeps the old digest would exit 3 on every audit run.
+    final text = script.readAsStringSync().replaceAll('\r\n', '\n');
+    final body = text.split(_begin)[1].split(_end)[0];
+    const fence = '```python\n';
+    final fenced = body.substring(body.indexOf(fence) + fence.length);
+    final code = '${fenced.substring(0, fenced.lastIndexOf('\n```'))}\n';
+    final digestLine = RegExp(
+      r"^SELF_DIGEST = '([0-9a-f]{64})'$",
+      multiLine: true,
+    );
+    final declared = digestLine.firstMatch(code)!.group(1);
+    final neutral = code.replaceFirst(
+      digestLine,
+      "SELF_DIGEST = '${'0' * 64}'",
+    );
+    expect(sha256.convert(utf8.encode(neutral)).toString(), declared);
   });
 
   test('the module-map step extracts by the same markers', () {
